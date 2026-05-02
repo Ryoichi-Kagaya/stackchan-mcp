@@ -32,16 +32,18 @@ config DEFAULT_WEBSOCKET_TOKEN
 
         The same precedence rules as CONFIG_DEFAULT_WEBSOCKET_URL apply:
         NVS websocket.token wins by default, unless
-        CONFIG_FORCE_DEFAULT_WEBSOCKET_URL forces the Kconfig values.
+        CONFIG_FORCE_DEFAULT_WEBSOCKET_URL forces the (non-empty) Kconfig
+        value to override NVS.
 
 config FORCE_DEFAULT_WEBSOCKET_URL
     bool "Force CONFIG_DEFAULT_WEBSOCKET_URL/TOKEN to override NVS"
     default n
     help
-        When enabled, the Kconfig defaults
+        When enabled, non-empty Kconfig defaults
         (CONFIG_DEFAULT_WEBSOCKET_URL / CONFIG_DEFAULT_WEBSOCKET_TOKEN)
-        always take priority over the NVS websocket.url / websocket.token
-        values. Useful when:
+        override the NVS websocket.url / websocket.token values. Empty
+        Kconfig values still fall through to NVS, so leaving the token
+        Kconfig empty keeps any NVS-stored token in use. Useful when:
 
         - The device's NVS still contains a stale upstream xiaozhi URL
           (e.g., wss://api.tenclass.net/...) from prior use, and there
