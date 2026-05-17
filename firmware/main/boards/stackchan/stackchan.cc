@@ -29,6 +29,7 @@ static inline bool ServoWritePosOk(int r) { return r > 0; }
 #endif
 #include "avatar_images.h"
 
+#include <smooth_ui_toolkit.hpp>
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/gpio.h>
@@ -45,6 +46,7 @@ static inline bool ServoWritePosOk(int r) { return r > 0; }
 #include <cJSON.h>
 #include <lvgl.h>
 #include <atomic>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <string>
@@ -833,6 +835,45 @@ private:
         return static_cast<uint16_t>(v);
     }
 
+    // Map the StartMove duration contract to spring options that approximate
+    // the requested timing. This is the stackchan-mcp side of
+    // m5stack/StackChan's map_speed_to_spring_options(speed): shorter
+    // duration -> higher stiffness/damping, longer duration -> lower
+    // stiffness/damping, with critical damping for no overshoot.
+    static smooth_ui_toolkit::SpringOptions_t MapDurationToSpringOptions(
+        uint32_t duration_ms) {
+        if (duration_ms == 0) {
+            duration_ms = 1;
+        }
+
+        float speed_f = 500.0f *
+            (static_cast<float>(MOTION_DEFAULT_DURATION_MS) /
+             static_cast<float>(duration_ms));
+        if (speed_f < 1.0f) speed_f = 1.0f;
+        if (speed_f > 1000.0f) speed_f = 1000.0f;
+        int speed = static_cast<int>(speed_f);
+
+        constexpr float kMin = 10.0f;
+        constexpr float kMax = 650.0f;
+        constexpr float kMass = 1.0f;
+        float normalized_speed = static_cast<float>(speed) / 1000.0f;
+        float stiffness =
+            kMin + (normalized_speed * normalized_speed) * (kMax - kMin);
+        float damping = 2.0f * std::sqrt(kMass * stiffness);
+
+        smooth_ui_toolkit::SpringOptions_t options;
+        options.stiffness = stiffness;
+        options.damping = damping;
+        options.mass = kMass;
+        options.velocity = 0.0f;
+        options.restDelta = speed > 800 ? 0.5f : 0.1f;
+        options.restSpeed = speed > 800 ? 0.5f : 0.1f;
+        options.duration = 0.0f;
+        options.bounce = 0.0f;
+        options.visualDuration = 0.0f;
+        return options;
+    }
+
     class MotionDriver {
     public:
         virtual ~MotionDriver() = default;
@@ -841,7 +882,8 @@ private:
         // WriteHeadAngles holds motion_mutex_ while calling this method; Tick()
         // and getters take the mutex internally for their own state access.
         virtual void StartMove(float yaw_deg, float pitch_deg,
-                               uint32_t duration_ms) = 0;
+                               uint32_t duration_ms,
+                               bool prefer_linear = false) = 0;
 
         // Last-known committed angle for each axis.
         virtual float GetYawDeg() const = 0;
@@ -869,10 +911,14 @@ private:
               scs_bus_mutex_(scs_bus_mutex),
               motion_mutex_(motion_mutex),
               yaw_motion_(yaw_motion),
-              pitch_motion_(pitch_motion) {}
+              pitch_motion_(pitch_motion) {
+            yaw_anim_.teleport(static_cast<float>(yaw_motion_.current_deg));
+            pitch_anim_.teleport(static_cast<float>(pitch_motion_.current_deg));
+        }
 
         void StartMove(float yaw_deg, float pitch_deg,
-                       uint32_t duration_ms) override {
+                       uint32_t duration_ms,
+                       bool prefer_linear) override {
             uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
             int yaw = static_cast<int>(yaw_deg);
             int pitch = static_cast<int>(pitch_deg);
@@ -882,12 +928,30 @@ private:
             yaw_motion_.move_start_ms = now_ms;
             yaw_motion_.move_duration_ms = duration_ms;
             yaw_motion_.moving = (yaw_motion_.target_deg != yaw_motion_.current_deg);
+            yaw_linear_mode_ = prefer_linear;
 
             pitch_motion_.target_deg = pitch;
             pitch_motion_.start_deg = pitch_motion_.current_deg;
             pitch_motion_.move_start_ms = now_ms;
             pitch_motion_.move_duration_ms = duration_ms;
             pitch_motion_.moving = (pitch_motion_.target_deg != pitch_motion_.current_deg);
+            pitch_linear_mode_ = prefer_linear;
+            if (prefer_linear) {
+                yaw_anim_.teleport(static_cast<float>(yaw_motion_.current_deg));
+                yaw_snap_on_rest_ = false;
+                pitch_anim_.teleport(static_cast<float>(pitch_motion_.current_deg));
+                pitch_snap_on_rest_ = false;
+                return;
+            }
+
+            smooth_ui_toolkit::SpringOptions_t spring_options =
+                MapDurationToSpringOptions(duration_ms);
+            StartAxisSpring(yaw_anim_, yaw_snap_on_rest_,
+                            yaw_motion_.current_deg, yaw,
+                            yaw_motion_.moving, spring_options);
+            StartAxisSpring(pitch_anim_, pitch_snap_on_rest_,
+                            pitch_motion_.current_deg, pitch,
+                            pitch_motion_.moving, spring_options);
         }
 
         float GetYawDeg() const override {
@@ -918,42 +982,56 @@ private:
 
             AxisMotion yaw_local;
             AxisMotion pitch_local;
+            int new_yaw_current;
+            bool new_yaw_moving;
+            int new_pitch_current;
+            bool new_pitch_moving;
+            bool yaw_linear_mode;
+            bool pitch_linear_mode;
+            uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+            float dt_s;
+            // Spring mode follows real elapsed time so bus ACK latency or
+            // mutex contention does not stretch animation time indefinitely.
+            // Clamp deep preemption to avoid a single large lurch.
+            if (last_tick_us_ == 0) {
+                dt_s = static_cast<float>(MOTION_TICK_MS) / 1000.0f;
+            } else {
+                dt_s = static_cast<float>(now_us - last_tick_us_) / 1000000.0f;
+                if (dt_s > 0.1f) {
+                    dt_s = 0.1f;
+                }
+            }
+            last_tick_us_ = now_us;
+            uint32_t now_ms = static_cast<uint32_t>(now_us / 1000);
+
             xSemaphoreTake(motion_mutex_, portMAX_DELAY);
             yaw_local = yaw_motion_;
             pitch_local = pitch_motion_;
+            yaw_linear_mode = yaw_linear_mode_;
+            pitch_linear_mode = pitch_linear_mode_;
+            if (!yaw_local.moving && !pitch_local.moving) {
+                xSemaphoreGive(motion_mutex_);
+                return;
+            }
+            new_yaw_current = yaw_local.current_deg;
+            new_yaw_moving = yaw_local.moving;
+            if (yaw_linear_mode) {
+                AdvanceAxisLinear(yaw_local, now_ms,
+                                  new_yaw_current, new_yaw_moving);
+            } else {
+                AdvanceAxisSpring(yaw_local, yaw_anim_, yaw_snap_on_rest_,
+                                  dt_s, new_yaw_current, new_yaw_moving);
+            }
+            new_pitch_current = pitch_local.current_deg;
+            new_pitch_moving = pitch_local.moving;
+            if (pitch_linear_mode) {
+                AdvanceAxisLinear(pitch_local, now_ms,
+                                  new_pitch_current, new_pitch_moving);
+            } else {
+                AdvanceAxisSpring(pitch_local, pitch_anim_, pitch_snap_on_rest_,
+                                  dt_s, new_pitch_current, new_pitch_moving);
+            }
             xSemaphoreGive(motion_mutex_);
-
-            if (!yaw_local.moving && !pitch_local.moving) return;
-
-            uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-
-            int new_yaw_current = yaw_local.current_deg;
-            bool new_yaw_moving = yaw_local.moving;
-            if (yaw_local.moving) {
-                uint32_t elapsed = now_ms - yaw_local.move_start_ms;
-                if (elapsed >= yaw_local.move_duration_ms) {
-                    new_yaw_current = yaw_local.target_deg;
-                    new_yaw_moving = false;
-                } else {
-                    int delta = yaw_local.target_deg - yaw_local.start_deg;
-                    new_yaw_current = yaw_local.start_deg +
-                        static_cast<int>(static_cast<int64_t>(delta) * elapsed / yaw_local.move_duration_ms);
-                }
-            }
-
-            int new_pitch_current = pitch_local.current_deg;
-            bool new_pitch_moving = pitch_local.moving;
-            if (pitch_local.moving) {
-                uint32_t elapsed = now_ms - pitch_local.move_start_ms;
-                if (elapsed >= pitch_local.move_duration_ms) {
-                    new_pitch_current = pitch_local.target_deg;
-                    new_pitch_moving = false;
-                } else {
-                    int delta = pitch_local.target_deg - pitch_local.start_deg;
-                    new_pitch_current = pitch_local.start_deg +
-                        static_cast<int>(static_cast<int64_t>(delta) * elapsed / pitch_local.move_duration_ms);
-                }
-            }
 
             xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
             if (yaw_local.moving) {
@@ -994,11 +1072,85 @@ private:
         }
 
     private:
+        static void StartAxisSpring(
+            smooth_ui_toolkit::AnimateValue& axis_anim,
+            bool& snap_on_rest,
+            int current_deg,
+            int target_deg,
+            bool moving,
+            const smooth_ui_toolkit::SpringOptions_t& spring_options) {
+            if (!moving) {
+                axis_anim.teleport(static_cast<float>(current_deg));
+                snap_on_rest = false;
+                return;
+            }
+
+            axis_anim.springOptions() = spring_options;
+            axis_anim.teleport(static_cast<float>(current_deg));
+            axis_anim = static_cast<float>(target_deg);
+            snap_on_rest = true;
+        }
+
+        static void AdvanceAxisSpring(
+            const AxisMotion& axis_local,
+            smooth_ui_toolkit::AnimateValue& axis_anim,
+            bool& snap_on_rest,
+            float dt_s,
+            int& new_current_deg,
+            bool& new_moving) {
+            if (!axis_local.moving) {
+                return;
+            }
+
+            axis_anim.updateWithDelta(dt_s);
+            new_current_deg = static_cast<int>(axis_anim.directValue());
+            if (axis_anim.done()) {
+                new_moving = false;
+                if (snap_on_rest) {
+                    new_current_deg = static_cast<int>(axis_anim.end);
+                    snap_on_rest = false;
+                }
+            }
+        }
+
+        static void AdvanceAxisLinear(
+            const AxisMotion& axis_local,
+            uint32_t now_ms,
+            int& new_current_deg,
+            bool& new_moving) {
+            if (!axis_local.moving) {
+                return;
+            }
+
+            // Linear mode intentionally stays wall-clock based, matching the
+            // pre-spring interpolation path used for boot-init slow climbs;
+            // spring mode uses the real elapsed Tick delta instead.
+            uint32_t elapsed = now_ms - axis_local.move_start_ms;
+            if (axis_local.move_duration_ms == 0 ||
+                elapsed >= axis_local.move_duration_ms) {
+                new_current_deg = axis_local.target_deg;
+                new_moving = false;
+            } else {
+                int delta = axis_local.target_deg - axis_local.start_deg;
+                new_current_deg = axis_local.start_deg +
+                    static_cast<int>(
+                        static_cast<int64_t>(delta) * elapsed /
+                        axis_local.move_duration_ms);
+            }
+        }
+
         ScsBus& scs_bus_;
         SemaphoreHandle_t& scs_bus_mutex_;
         SemaphoreHandle_t& motion_mutex_;
         AxisMotion& yaw_motion_;
         AxisMotion& pitch_motion_;
+        smooth_ui_toolkit::AnimateValue yaw_anim_;
+        smooth_ui_toolkit::AnimateValue pitch_anim_;
+        bool yaw_snap_on_rest_ = false;
+        bool pitch_snap_on_rest_ = false;
+        bool yaw_linear_mode_ = false;
+        bool pitch_linear_mode_ = false;
+        uint64_t last_tick_us_ = 0;
     };
 
     class ServoDelegatedMotionDriver final : public MotionDriver {
@@ -1030,7 +1182,12 @@ private:
         // "StartMove writes state; Tick drives the bus" split and keeps
         // timer-task latency bounded.
         void StartMove(float yaw_deg, float pitch_deg,
-                       uint32_t duration_ms) override {
+                       uint32_t duration_ms,
+                       bool prefer_linear) override {
+            // The delegated path is already duration-bounded by the SCS0009
+            // internal interpolation time argument; there is no host-side
+            // profile to switch.
+            (void)prefer_linear;
             uint16_t clamped = clamp_u16(duration_ms);
             if (duration_ms > clamped) {
                 static bool duration_overflow_warned = false;
@@ -2238,7 +2395,8 @@ private:
             }
             TickType_t boot_init_start_tick = xTaskGetTickCount();
             WriteHeadAngles(BOOT_INIT_YAW_DEG, BOOT_INIT_PITCH_DEG,
-                            phase0_duration_ms);
+                            phase0_duration_ms,
+                            /* prefer_linear = */ true);
             // Two-phase boot-init wait:
             //
             // (1) Mandatory minimum: vTaskDelay until
@@ -2453,7 +2611,8 @@ private:
     // target — which would let a stale wobble step overwrite the new
     // command.
     void WriteHeadAngles(int yaw_deg, int pitch_deg,
-                         uint32_t duration_ms = MOTION_DEFAULT_DURATION_MS) {
+                         uint32_t duration_ms = MOTION_DEFAULT_DURATION_MS,
+                         bool prefer_linear = false) {
         if (!servo_ok_ || motion_driver_ == nullptr) {
             ESP_LOGW(TAG, "WriteHeadAngles skipped: servo not initialized");
             return;
@@ -2463,7 +2622,8 @@ private:
             servo_wobble_active_.store(false);
             servo_wobble_step_.store(0);
         }
-        motion_driver_->StartMove(yaw_deg, pitch_deg, duration_ms);
+        motion_driver_->StartMove(yaw_deg, pitch_deg, duration_ms,
+                                  prefer_linear);
         xSemaphoreGive(motion_mutex_);
     }
 
