@@ -45,6 +45,7 @@ static inline bool ServoWritePosOk(int r) { return r > 0; }
 #include "esp_video.h"
 #include <cJSON.h>
 #include <lvgl.h>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <limits>
@@ -679,10 +680,43 @@ private:
     SemaphoreHandle_t scs_bus_mutex_ = nullptr;    // serializes UART access (WritePos/ReadPos)
     std::unique_ptr<MotionDriver> motion_driver_;
     TaskHandle_t servo_task_handle_ = nullptr;
+    uint32_t last_motion_end_ms_ = 0;              // ServoTask-private
+    bool last_motion_end_valid_ = false;           // ServoTask-private
+    std::atomic<bool> idle_timer_reset_pending_{false};
+    enum class TorqueState : uint8_t {
+        kEngaged = 0,
+        kPartial = 1,
+        kReleased = 2,
+        kReleasing = 3,
+    };
+    std::atomic<TorqueState> torque_state_{TorqueState::kEngaged};
+    std::atomic<uint32_t> torque_release_epoch_{0};
+    // Per-axis commanded torque state is protected by scs_bus_mutex_;
+    // torque_state_ publishes the derived cross-task summary.
+    bool yaw_torque_enabled_ = true;               // protected by scs_bus_mutex_
+    bool pitch_torque_enabled_ = true;             // protected by scs_bus_mutex_
+    std::atomic<bool> boot_init_done_{false};
+#if CONFIG_STACKCHAN_AUTO_TORQUE_RELEASE_ENABLED
+    std::atomic<bool> auto_release_enabled_{true};
+#else
+    std::atomic<bool> auto_release_enabled_{false};
+#endif
     static constexpr uint32_t MOTION_TICK_MS = 20;
     static constexpr uint32_t MOTION_DEFAULT_DURATION_MS = 600;
     static constexpr uint32_t MOTION_PER_WRITE_TIME_MS = 30;
     static constexpr uint32_t MOTION_POLL_INTERVAL_MS = 50;
+    static constexpr uint32_t AUTO_TORQUE_RELEASE_MIN_MS = 500;
+    static constexpr uint32_t AUTO_TORQUE_RELEASE_MAX_MS = 600000;
+    static constexpr int kMaxReengageRetries = 3;
+    static constexpr int kMaxManualReengageRetries = 3;
+#ifdef CONFIG_STACKCHAN_AUTO_TORQUE_RELEASE_MS
+    static constexpr uint32_t AUTO_TORQUE_RELEASE_DEFAULT_MS =
+        CONFIG_STACKCHAN_AUTO_TORQUE_RELEASE_MS;
+#else
+    static constexpr uint32_t AUTO_TORQUE_RELEASE_DEFAULT_MS = 5000;
+#endif
+    std::atomic<uint32_t> auto_release_timeout_ms_{
+        AUTO_TORQUE_RELEASE_DEFAULT_MS};
 
     // Issue #80 / #98: pitch is guarded by two complementary tiers.
     //
@@ -873,6 +907,97 @@ private:
         options.visualDuration = 0.0f;
         return options;
     }
+
+    enum class ReleaseReason : uint8_t {
+        kManual = 0,
+        kAutoIdle,
+        kReengagement,
+    };
+
+    static const char* ReleaseReasonName(ReleaseReason reason) {
+        switch (reason) {
+            case ReleaseReason::kManual:
+                return "manual";
+            case ReleaseReason::kAutoIdle:
+                return "auto_idle";
+            case ReleaseReason::kReengagement:
+                return "reengagement";
+        }
+        return "unknown";
+    }
+
+    // Caller must hold scs_bus_mutex_.
+    void PublishTorqueState() {
+        TorqueState state;
+        if (yaw_torque_enabled_ && pitch_torque_enabled_) {
+            state = TorqueState::kEngaged;
+        } else if (!yaw_torque_enabled_ && !pitch_torque_enabled_) {
+            state = TorqueState::kReleased;
+        } else {
+            state = TorqueState::kPartial;
+        }
+        TorqueState old_state =
+            torque_state_.load(std::memory_order_acquire);
+        if (state == TorqueState::kEngaged &&
+            old_state != TorqueState::kEngaged) {
+            // Reset the ServoTask-owned idle window even when OFF->ON
+            // happens between ServoTask ticks.
+            idle_timer_reset_pending_.store(true,
+                                            std::memory_order_release);
+        }
+        torque_state_.store(state, std::memory_order_release);
+    }
+
+    // Marks a fully-OFF transition while the bus write is still pending.
+    // Returns this call's release epoch so auto-idle rollback can detect
+    // another release publisher that interleaved after it.
+    uint32_t MarkReleasing() {
+        uint32_t epoch =
+            torque_release_epoch_.fetch_add(1, std::memory_order_acq_rel) +
+            1;
+        torque_state_.store(TorqueState::kReleasing,
+                            std::memory_order_release);
+        return epoch;
+    }
+
+    // Block until torque_state_ leaves kReleasing or the elapsed-time
+    // budget expires. Caller must NOT hold motion_mutex_ or scs_bus_mutex_.
+    // Uses esp_timer_get_time() so the budget is honored at real time
+    // regardless of CONFIG_FREERTOS_HZ.
+    //
+    // Returns true if the state is no longer kReleasing (proceed safely),
+    // false if the wait budget was exhausted while still kReleasing
+    // (caller decides how to handle: either skip with ESP_LOGW or defer to
+    // its own bounded retry).
+    bool WaitForKReleasingToClear() {
+        constexpr uint32_t kMaxKReleasingWaitMs = 200;
+        constexpr uint32_t kKReleasingPollIntervalMs = 5;
+        const TickType_t kDelayTicks =
+            std::max<TickType_t>(1,
+                                 pdMS_TO_TICKS(kKReleasingPollIntervalMs));
+        const uint32_t start_us =
+            static_cast<uint32_t>(esp_timer_get_time());
+        auto state = torque_state_.load(std::memory_order_acquire);
+        while (state == TorqueState::kReleasing) {
+            const uint32_t elapsed_ms =
+                (static_cast<uint32_t>(esp_timer_get_time()) - start_us) /
+                1000;
+            if (elapsed_ms >= kMaxKReleasingWaitMs) {
+                return false;
+            }
+            vTaskDelay(kDelayTicks);
+            state = torque_state_.load(std::memory_order_acquire);
+        }
+        return true;
+    }
+
+    struct ServoTorqueResult {
+        int yaw_bus_return = -1;
+        int pitch_bus_return = -1;
+        bool yaw_ok = false;
+        bool pitch_ok = false;
+        bool short_circuited = false;
+    };
 
     class MotionDriver {
     public:
@@ -2742,6 +2867,369 @@ private:
                          "leaving current_deg at restored-or-seeded value "
                          "and marking position unknown for delegated no-op gate");
             }
+            boot_init_done_.store(true, std::memory_order_release);
+        }
+    }
+
+    ServoTorqueResult InternalSetServoTorque(bool yaw_enabled,
+                                             bool pitch_enabled,
+                                             ReleaseReason reason,
+                                             uint32_t expected_release_epoch =
+                                                 0) {
+        ServoTorqueResult result;
+        const bool disables_axis = !yaw_enabled || !pitch_enabled;
+
+        auto update_bus_ok = [&]() {
+#if CONFIG_STACKCHAN_SERVO_FEETECH
+            result.yaw_ok = (result.yaw_bus_return == 0);
+            result.pitch_ok = (result.pitch_bus_return == 0);
+#else
+            result.yaw_ok = (result.yaw_bus_return > 0);
+            result.pitch_ok = (result.pitch_bus_return > 0);
+#endif
+        };
+
+        auto log_result = [&](bool short_circuited) {
+            result.short_circuited = short_circuited;
+            ESP_LOGI(TAG,
+                     "set_servo_torque (reason=%s): servo_ok=%d "
+                     "yaw_enabled=%d (r=%d) pitch_enabled=%d (r=%d) "
+                     "short_circuited=%d",
+                     ReleaseReasonName(reason),
+                     servo_ok_ ? 1 : 0,
+                     yaw_enabled ? 1 : 0, result.yaw_bus_return,
+                     pitch_enabled ? 1 : 0, result.pitch_bus_return,
+                     short_circuited ? 1 : 0);
+        };
+
+        auto finish = [&](bool short_circuited) -> ServoTorqueResult {
+            log_result(short_circuited);
+            return result;
+        };
+
+        if (!servo_ok_ || scs_bus_mutex_ == nullptr) {
+            return finish(false);
+        }
+
+        // Fully-symmetric re-engage remains bus-ordered even when it becomes
+        // a no-op. If an auto-idle OFF has already published kReleasing, the
+        // manual path waits for that pending transition before entering the
+        // bus section.
+        if (yaw_enabled && pitch_enabled) {
+            // Pre-mutex wait: this reduces obvious contention before
+            // attempting scs_bus_mutex_. The post-mutex re-check below closes
+            // the pre-check-to-mutex TOCTOU window.
+            if (reason == ReleaseReason::kManual) {
+                auto state_pre =
+                    torque_state_.load(std::memory_order_acquire);
+                if (state_pre == TorqueState::kReleasing) {
+                    if (!WaitForKReleasingToClear()) {
+                        ESP_LOGW(TAG,
+                                 "set_servo_torque (reason=%s): kReleasing "
+                                 "not clearing within wait budget; skipping "
+                                 "bus frames, caller may retry.",
+                                 ReleaseReasonName(reason));
+                        log_result(true);
+                        return result;
+                    }
+                    // After the wait, state may be kEngaged (OFF failed and
+                    // rolled back) or kReleased (OFF succeeded). Fall through
+                    // to the existing (true, true) logic, which short-circuits
+                    // on kEngaged and proceeds normally on kReleased/kPartial.
+                }
+            }
+
+            // Bounded retry for the remaining TOCTOU window: torque_state_
+            // can flip to kReleasing between the pre-mutex check and
+            // xSemaphoreTake(). Once the bus mutex is held, re-check; if an
+            // auto-release OFF was published in that gap, release the mutex,
+            // wait, and retry. kReengagement is exempt because
+            // EnsureTorqueEngagedBeforeMove() already waited; kAutoIdle does
+            // not enter this (true, true) branch.
+            for (int attempt = 0; attempt < kMaxManualReengageRetries;
+                 ++attempt) {
+                xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
+
+                if (reason == ReleaseReason::kManual &&
+                    torque_state_.load(std::memory_order_acquire) ==
+                        TorqueState::kReleasing) {
+                    xSemaphoreGive(scs_bus_mutex_);
+                    if (!WaitForKReleasingToClear()) {
+                        ESP_LOGW(TAG,
+                                 "set_servo_torque (reason=%s): kReleasing "
+                                 "persists after attempt %d; skipping bus "
+                                 "frames, caller may retry.",
+                                 ReleaseReasonName(reason),
+                                 attempt);
+                        log_result(true);
+                        return result;
+                    }
+                    continue;
+                }
+
+                if (torque_state_.load(std::memory_order_acquire) ==
+                    TorqueState::kEngaged) {
+                    log_result(true);
+                    xSemaphoreGive(scs_bus_mutex_);
+                    return result;
+                }
+                result.yaw_bus_return =
+                    scs_bus_.EnableTorque(SERVO_YAW_ID, 1);
+                result.pitch_bus_return =
+                    scs_bus_.EnableTorque(SERVO_PITCH_ID, 1);
+                update_bus_ok();
+                if (result.yaw_ok) {
+                    yaw_torque_enabled_ = true;
+                }
+                if (result.pitch_ok) {
+                    pitch_torque_enabled_ = true;
+                }
+                PublishTorqueState();
+                log_result(false);
+                xSemaphoreGive(scs_bus_mutex_);
+                return result;
+            }
+
+            ESP_LOGW(TAG,
+                     "set_servo_torque (reason=%s): kReleasing observed in "
+                     "all %d post-mutex retries; skipping bus frames.",
+                     ReleaseReasonName(reason),
+                     kMaxManualReengageRetries);
+            log_result(true);
+            return result;
+        } else {
+            if (!yaw_enabled && !pitch_enabled) {
+                xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
+                bool already_released =
+                    torque_state_.load(std::memory_order_acquire) ==
+                    TorqueState::kReleased;
+                if (already_released) {
+                    log_result(true);
+                    xSemaphoreGive(scs_bus_mutex_);
+                    return result;
+                }
+                xSemaphoreGive(scs_bus_mutex_);
+            }
+
+            // Preserve the existing cancellation-first disable path exactly:
+            // reset MotionDriver state for axes being disabled before the
+            // EnableTorque(OFF) bus frames can race with ServoTask writes.
+            if (motion_driver_ != nullptr && motion_mutex_ != nullptr &&
+                disables_axis) {
+                xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+                if (reason == ReleaseReason::kAutoIdle &&
+                    (yaw_motion_.moving || pitch_motion_.moving ||
+                     servo_wobble_active_.load(std::memory_order_acquire))) {
+                    xSemaphoreGive(motion_mutex_);
+                    return finish(true);
+                }
+                if (!yaw_enabled) {
+                    yaw_motion_.moving = false;
+                    yaw_motion_.position_unknown = true;
+                    motion_driver_->InvalidateAxisToken(SERVO_YAW_ID);
+                }
+                if (!pitch_enabled) {
+                    pitch_motion_.moving = false;
+                    pitch_motion_.position_unknown = true;
+                    motion_driver_->InvalidateAxisToken(SERVO_PITCH_ID);
+                }
+                servo_wobble_active_.store(false, std::memory_order_release);
+                servo_wobble_step_.store(0, std::memory_order_release);
+                // Mark the fully-OFF transition before releasing
+                // motion_mutex_ so concurrent motion entries do not observe
+                // the old engaged state while the OFF bus write is pending.
+                if (!yaw_enabled && !pitch_enabled) {
+                    (void)MarkReleasing();
+                }
+                xSemaphoreGive(motion_mutex_);
+            }
+
+            xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
+            if (reason == ReleaseReason::kAutoIdle &&
+                expected_release_epoch != 0) {
+                uint32_t current_epoch =
+                    torque_release_epoch_.load(std::memory_order_acquire);
+                auto current_state =
+                    torque_state_.load(std::memory_order_acquire);
+                if (current_epoch != expected_release_epoch ||
+                    current_state != TorqueState::kReleasing) {
+                    ESP_LOGW(TAG,
+                             "auto-release OFF aborted at bus check: epoch=%u "
+                             "(expected %u), state=%d (expected kReleasing); "
+                             "skipping EnableTorque(0,0) frames.",
+                             (unsigned)current_epoch,
+                             (unsigned)expected_release_epoch,
+                             (int)current_state);
+                    xSemaphoreGive(scs_bus_mutex_);
+                    log_result(true);
+                    return result;
+                }
+            }
+            result.yaw_bus_return = scs_bus_.EnableTorque(
+                SERVO_YAW_ID, yaw_enabled ? 1 : 0);
+            result.pitch_bus_return = scs_bus_.EnableTorque(
+                SERVO_PITCH_ID, pitch_enabled ? 1 : 0);
+            update_bus_ok();
+            if (result.yaw_ok) {
+                yaw_torque_enabled_ = yaw_enabled;
+            }
+            if (result.pitch_ok) {
+                pitch_torque_enabled_ = pitch_enabled;
+            }
+            PublishTorqueState();
+            log_result(false);
+            xSemaphoreGive(scs_bus_mutex_);
+            return result;
+        }
+    }
+
+    void EnsureTorqueEngagedBeforeMove() {
+        auto state = torque_state_.load(std::memory_order_acquire);
+        if (state == TorqueState::kEngaged) {
+            return;
+        }
+        if (!servo_ok_) {
+            return;
+        }
+
+        if (state == TorqueState::kReleasing) {
+            if (!WaitForKReleasingToClear()) {
+                ESP_LOGW(TAG,
+                         "EnsureTorqueEngagedBeforeMove: kReleasing not "
+                         "clearing within wait budget, deferring to caller "
+                         "retry.");
+                return;
+            }
+            state = torque_state_.load(std::memory_order_acquire);
+            if (state == TorqueState::kEngaged) {
+                return;  // OFF rolled back to kEngaged
+            }
+        }
+
+        // state is kPartial or kReleased -- safe to re-engage now.
+        InternalSetServoTorque(true, true, ReleaseReason::kReengagement);
+    }
+
+    bool TakeMotionMutexAfterTorqueEngaged() {
+        for (int attempt = 0; attempt < kMaxReengageRetries; ++attempt) {
+            EnsureTorqueEngagedBeforeMove();
+            xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+            if (torque_state_.load(std::memory_order_acquire) ==
+                TorqueState::kEngaged) {
+                return true;
+            }
+            xSemaphoreGive(motion_mutex_);
+            vTaskDelay(pdMS_TO_TICKS(MOTION_TICK_MS));
+        }
+        ESP_LOGW(TAG,
+                 "EnsureTorqueEngagedBeforeMove: re-engagement failed after "
+                 "%d attempts; skipping motion entry to avoid silent "
+                 "torque-off WritePos.",
+                 kMaxReengageRetries);
+        return false;
+    }
+
+    void MaybeAutoReleaseTorque() {
+        if (!auto_release_enabled_.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (!servo_ok_) {
+            return;
+        }
+        if (!boot_init_done_.load(std::memory_order_acquire)) {
+            return;
+        }
+        // PublishTorqueState() raises this when torque re-engages between
+        // ServoTask ticks, so a stale idle timer cannot immediately re-OFF.
+        if (idle_timer_reset_pending_.exchange(
+                false, std::memory_order_acq_rel)) {
+            last_motion_end_valid_ = false;
+        }
+        // Keep the idle window scoped to the currently engaged interval.
+        // Released/partial/releasing states must not age a stale timer into
+        // the next re-engage.
+        if (torque_state_.load(std::memory_order_acquire) !=
+            TorqueState::kEngaged) {
+            last_motion_end_valid_ = false;
+            return;
+        }
+        if (servo_wobble_active_.load(std::memory_order_acquire)) {
+            last_motion_end_valid_ = false;
+            return;
+        }
+
+        bool moving = motion_driver_->IsMoving();
+        uint32_t now_ms =
+            static_cast<uint32_t>(esp_timer_get_time() / 1000);
+
+        if (moving) {
+            last_motion_end_valid_ = false;
+            return;
+        }
+
+        if (!last_motion_end_valid_) {
+            last_motion_end_ms_ = now_ms;
+            last_motion_end_valid_ = true;
+            return;
+        }
+
+        uint32_t idle_ms = now_ms - last_motion_end_ms_;
+        uint32_t timeout_ms =
+            auto_release_timeout_ms_.load(std::memory_order_acquire);
+        if (idle_ms >= timeout_ms) {
+            // Publish the pending OFF before InternalSetServoTorque() can
+            // block on motion_mutex_, so a concurrent manual ON is routed
+            // through the kReleasing wait/retry path instead of treating the
+            // already-expired engaged state as a successful no-op.
+            uint32_t my_pre_epoch = MarkReleasing();
+            ServoTorqueResult r = InternalSetServoTorque(
+                false, false, ReleaseReason::kAutoIdle,
+                /*expected_release_epoch=*/my_pre_epoch + 1);
+            auto state_after =
+                torque_state_.load(std::memory_order_acquire);
+            if (state_after == TorqueState::kReleased) {
+                last_motion_end_valid_ = false;
+            } else if (r.short_circuited) {
+                uint32_t current_epoch =
+                    torque_release_epoch_.load(std::memory_order_acquire);
+                if (current_epoch == my_pre_epoch) {
+                    // Auto-idle re-observed motion or wobble under
+                    // motion_mutex_ and returned before any bus frame went
+                    // out, so the per-axis torque state is still fully
+                    // engaged.
+                    torque_state_.store(TorqueState::kEngaged,
+                                        std::memory_order_release);
+                    ESP_LOGW(TAG,
+                             "auto-release OFF aborted by motion/wobble "
+                             "re-check; rolled back torque_state_ to "
+                             "kEngaged (epoch=%u), retry after "
+                             "one idle window.",
+                             (unsigned)my_pre_epoch);
+                } else if (current_epoch == my_pre_epoch + 1) {
+                    ESP_LOGW(TAG,
+                             "auto-release OFF aborted at bus check; leaving "
+                             "torque_state_ for concurrent publisher "
+                             "(my_pre_epoch=%u current_epoch=%u).",
+                             (unsigned)my_pre_epoch,
+                             (unsigned)current_epoch);
+                } else {
+                    ESP_LOGW(TAG,
+                             "auto-release OFF: release epoch advanced past "
+                             "ours (my_pre_epoch=%u current_epoch=%u); "
+                             "leaving torque_state_ for concurrent publisher.",
+                             (unsigned)my_pre_epoch,
+                             (unsigned)current_epoch);
+                }
+                last_motion_end_ms_ = now_ms;
+            } else {
+                last_motion_end_ms_ = now_ms;
+                ESP_LOGW(TAG,
+                         "auto-release OFF bus write failed: yaw_ok=%d "
+                         "(r=%d) pitch_ok=%d (r=%d). Retrying after one "
+                         "idle window.",
+                         r.yaw_ok ? 1 : 0, r.yaw_bus_return,
+                         r.pitch_ok ? 1 : 0, r.pitch_bus_return);
+            }
         }
     }
 
@@ -2769,7 +3257,9 @@ private:
             ESP_LOGW(TAG, "WriteHeadAngles skipped: servo not initialized");
             return;
         }
-        xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+        if (!TakeMotionMutexAfterTorqueEngaged()) {
+            return;
+        }
         if (servo_wobble_active_.load()) {
             servo_wobble_active_.store(false);
             servo_wobble_step_.store(0);
@@ -2783,18 +3273,24 @@ private:
     // after the active MotionDriver reports idle, so the delegated path never
     // overwrites an in-flight SCS0009 internal motion.
     //
-    // Entire body runs under motion_mutex_. Without that hold, a concurrent
-    // non-wobble WriteHeadAngles() could clear servo_wobble_active_ AFTER
-    // this function has passed the active-load + IsMoving gate but BEFORE
-    // the switch reaches dispatch, which would let a wobble step
-    // overwrite the user's freshly-staged target. Holding the mutex makes
-    // "wobble-active check → idle check → step dispatch" atomic w.r.t.
-    // any external StartMove() request.
+    // The initial active check stays outside motion_mutex_ so idle ServoTask
+    // ticks do not run the torque re-engagement path. The dispatch body runs
+    // under motion_mutex_; without that hold, a concurrent non-wobble
+    // WriteHeadAngles() could clear servo_wobble_active_ AFTER this function
+    // has passed the active-load + IsMoving gate but BEFORE the switch reaches
+    // dispatch, which would let a wobble step overwrite the user's freshly-
+    // staged target. Holding the mutex makes "wobble-active check → idle check
+    // → step dispatch" atomic w.r.t. any external StartMove() request.
     void ServoWobbleStepAdvance() {
         if (!servo_ok_ || motion_driver_ == nullptr) {
             return;
         }
-        xSemaphoreTake(motion_mutex_, portMAX_DELAY);
+        if (!servo_wobble_active_.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (!TakeMotionMutexAfterTorqueEngaged()) {
+            return;
+        }
         if (!servo_wobble_active_.load()) {
             xSemaphoreGive(motion_mutex_);
             return;
@@ -2874,6 +3370,7 @@ private:
                 continue;
             }
             motion_driver_->Tick();
+            MaybeAutoReleaseTorque();
             ServoWobbleStepAdvance();
             taskYIELD();
         }
@@ -4015,98 +4512,92 @@ private:
             [this](const PropertyList& properties) -> ReturnValue {
                 bool yaw_enabled = properties["yaw_enabled"].value<bool>();
                 bool pitch_enabled = properties["pitch_enabled"].value<bool>();
-
-                // Cancel MotionDriver state for any axis whose torque is
-                // being disabled BEFORE issuing the EnableTorque bus
-                // frame. Without this ordering, ServoTask could snapshot
-                // motion state while moving=true, wait on scs_bus_mutex_
-                // through our EnableTorque(OFF), then fire one stale
-                // WritePos on the freshly-disabled axis right after we
-                // release scs_bus_mutex_ (silently absorbed while torque
-                // is off, then resuming audibly when torque comes back).
-                // Performing the cancellation first lets the next Tick
-                // observe moving=false / a fresh request_token before it
-                // commits any WritePos. position_unknown forces the
-                // delegated path to re-dispatch the next move
-                // (HostInterpolation ignores the flag, but the
-                // moving=false + token bump already block resumption
-                // there). Re-enable is treated as a user-driven re-
-                // anchor: the caller is expected to use get_head_angles
-                // + set_head_angles to re-establish a verified position
-                // if needed.
-                //
-                // Known carve-out (#160): on the delegated path,
-                // ServoDelegatedMotionDriver does not override
-                // InvalidateAxisToken, and the per-axis AxisServo private
-                // pending_dispatch_ / retry-state is not cleared by this
-                // path. A subsequent Update() tick can therefore still
-                // re-stage a WritePos on the freshly-disabled axis from
-                // pending state captured before this call. Full
-                // delegated-path cancellation requires the same refactor
-                // tracked under #160 and is out of scope for this probe.
-                if (motion_driver_ != nullptr && motion_mutex_ != nullptr &&
-                    (!yaw_enabled || !pitch_enabled)) {
-                    xSemaphoreTake(motion_mutex_, portMAX_DELAY);
-                    if (!yaw_enabled) {
-                        yaw_motion_.moving = false;
-                        yaw_motion_.position_unknown = true;
-                        motion_driver_->InvalidateAxisToken(SERVO_YAW_ID);
-                    }
-                    if (!pitch_enabled) {
-                        pitch_motion_.moving = false;
-                        pitch_motion_.position_unknown = true;
-                        motion_driver_->InvalidateAxisToken(SERVO_PITCH_ID);
-                    }
-                    // Also cancel any in-flight servo wobble sequence.
-                    // Wobble drives both axes through ServoTaskMain's
-                    // ServoWobbleStepAdvance after Tick; without
-                    // clearing the active flag here, the next tick
-                    // would observe moving==false and stage the next
-                    // wobble StartMove with torque off, enqueuing fresh
-                    // WritePos targets that would run on re-enable.
-                    // Mirrors the wobble-cancel sequence in
-                    // WriteHeadAngles.
-                    servo_wobble_active_.store(false);
-                    servo_wobble_step_.store(0);
-                    xSemaphoreGive(motion_mutex_);
-                }
-
-                int r_yaw = -1;
-                int r_pitch = -1;
-                if (servo_ok_ && scs_bus_mutex_ != nullptr) {
-                    xSemaphoreTake(scs_bus_mutex_, portMAX_DELAY);
-                    r_yaw = scs_bus_.EnableTorque(SERVO_YAW_ID,
-                                                  yaw_enabled ? 1 : 0);
-                    r_pitch = scs_bus_.EnableTorque(SERVO_PITCH_ID,
-                                                    pitch_enabled ? 1 : 0);
-                    xSemaphoreGive(scs_bus_mutex_);
-                }
-
-#if CONFIG_STACKCHAN_SERVO_FEETECH
-                bool yaw_ok = (r_yaw == 0);
-                bool pitch_ok = (r_pitch == 0);
-#else
-                bool yaw_ok = (r_yaw > 0);
-                bool pitch_ok = (r_pitch > 0);
-#endif
+                ServoTorqueResult torque_result = InternalSetServoTorque(
+                    yaw_enabled, pitch_enabled, ReleaseReason::kManual);
 
                 cJSON* root = cJSON_CreateObject();
                 cJSON_AddBoolToObject(root, "yaw_enabled", yaw_enabled);
                 cJSON_AddBoolToObject(root, "pitch_enabled", pitch_enabled);
-                cJSON_AddNumberToObject(root, "yaw_bus_return", r_yaw);
-                cJSON_AddNumberToObject(root, "pitch_bus_return", r_pitch);
+                cJSON_AddNumberToObject(root, "yaw_bus_return",
+                                        torque_result.yaw_bus_return);
+                cJSON_AddNumberToObject(root, "pitch_bus_return",
+                                        torque_result.pitch_bus_return);
                 cJSON_AddBoolToObject(root, "servo_ok", servo_ok_);
-                cJSON_AddBoolToObject(root, "ok", servo_ok_ && yaw_ok && pitch_ok);
+                cJSON_AddBoolToObject(
+                    root, "ok",
+                    servo_ok_ && (torque_result.short_circuited ||
+                                  (torque_result.yaw_ok &&
+                                   torque_result.pitch_ok)));
+                cJSON_AddBoolToObject(root, "short_circuited",
+                                      torque_result.short_circuited);
                 if (!servo_ok_) {
                     cJSON_AddStringToObject(root, "error",
                                             "Servo bus not initialized.");
                 }
+                return root;
+            });
+
+        mcp_server.AddTool(
+            "self.robot.set_auto_torque_release",
+            "Enable or disable automatic SCS0009 torque release after "
+            "motion idle timeout. timeout_ms is clamped by the firmware "
+            "to 500..600000 ms. Disabling this setting does not re-enable "
+            "torque if it is already released; the next set_head_angles, "
+            "wobble, or explicit set_servo_torque(true, true) call "
+            "re-engages torque.",
+            PropertyList({Property("enabled", kPropertyTypeBoolean),
+                          Property("timeout_ms", kPropertyTypeInteger,
+                                   (int)AUTO_TORQUE_RELEASE_DEFAULT_MS)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                bool enabled = properties["enabled"].value<bool>();
+                int requested_timeout_ms = properties["timeout_ms"].value<int>();
+                bool clamped = false;
+                uint32_t timeout_ms = 0;
+
+                if (requested_timeout_ms <
+                    static_cast<int>(AUTO_TORQUE_RELEASE_MIN_MS)) {
+                    timeout_ms = AUTO_TORQUE_RELEASE_MIN_MS;
+                    clamped = true;
+                    ESP_LOGW(TAG,
+                             "set_auto_torque_release: timeout_ms=%d below "
+                             "minimum %u, clamping",
+                             requested_timeout_ms,
+                             (unsigned)AUTO_TORQUE_RELEASE_MIN_MS);
+                } else if (requested_timeout_ms >
+                           static_cast<int>(AUTO_TORQUE_RELEASE_MAX_MS)) {
+                    timeout_ms = AUTO_TORQUE_RELEASE_MAX_MS;
+                    clamped = true;
+                    ESP_LOGW(TAG,
+                             "set_auto_torque_release: timeout_ms=%d above "
+                             "maximum %u, clamping",
+                             requested_timeout_ms,
+                             (unsigned)AUTO_TORQUE_RELEASE_MAX_MS);
+                } else {
+                    timeout_ms = static_cast<uint32_t>(requested_timeout_ms);
+                }
+
+                bool torque_released_at_call =
+                    torque_state_.load(std::memory_order_acquire) ==
+                    TorqueState::kReleased;
+                auto_release_timeout_ms_.store(timeout_ms,
+                                               std::memory_order_release);
+                auto_release_enabled_.store(enabled,
+                                            std::memory_order_release);
+
                 ESP_LOGI(TAG,
-                         "set_servo_torque: servo_ok=%d yaw_enabled=%d (r=%d) "
-                         "pitch_enabled=%d (r=%d)",
-                         servo_ok_ ? 1 : 0,
-                         (int)yaw_enabled, r_yaw,
-                         (int)pitch_enabled, r_pitch);
+                         "set_auto_torque_release: enabled=%d "
+                         "timeout_ms=%u clamped=%d "
+                         "torque_released_at_call=%d",
+                         enabled ? 1 : 0, (unsigned)timeout_ms,
+                         clamped ? 1 : 0,
+                         torque_released_at_call ? 1 : 0);
+
+                cJSON* root = cJSON_CreateObject();
+                cJSON_AddBoolToObject(root, "enabled", enabled);
+                cJSON_AddNumberToObject(root, "timeout_ms", timeout_ms);
+                cJSON_AddBoolToObject(root, "clamped", clamped);
+                cJSON_AddBoolToObject(root, "torque_released_at_call",
+                                      torque_released_at_call);
                 return root;
             });
 
