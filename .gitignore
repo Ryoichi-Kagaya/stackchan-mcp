@@ -42,6 +42,12 @@ firmware/sdkconfig.old
 firmware/sdkconfig.defaults.local
 firmware/main/boards/stackchan/avatar_images.local.cc
 firmware/main/boards/stackchan/avatar_images.local.h
+firmware/nvs_config.csv
+firmware/nvs_new.bin
+
+# Gateway runtime logs
+gateway/gateway.log
 
 # uv lockfile is OK to commit
 # (allow-listed by absence of uv.lock entry above)
+.claude/
