@@ -529,21 +529,21 @@ async def _dispatch_mcp_tool(
             "self.touch.get_touch_state",
             {},
         ),
-        "set_led": (
-            "self.led.set_color",
+        "set_led_color": (
+            "self.robot.set_led_color",
             arguments,
         ),
-        "set_all_leds": (
-            "self.led.set_all",
+        "create_reminder": (
+            "self.robot.create_reminder",
             arguments,
         ),
-        "set_leds": (
-            "self.led.set_many",
-            {"colors": json.dumps(arguments.get("colors", []))},
-        ),
-        "clear_leds": (
-            "self.led.clear",
+        "get_reminders": (
+            "self.robot.get_reminders",
             {},
+        ),
+        "stop_reminder": (
+            "self.robot.stop_reminder",
+            arguments,
         ),
         "port_b_ws2812_init": (
             "self.port_b.ws2812.init",
@@ -657,18 +657,13 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
             Tool(
                 name="take_photo",
                 description=(
-                    "Take a photo with the robot's camera and ask a question about it. "
-                    "The device captures an image and returns an AI-generated description."
+                    "Take a photo with the robot's camera. "
+                    "The device captures a JPEG and uploads it to the gateway. "
+                    "Returns the local file path of the saved image."
                 ),
                 inputSchema={
                     "type": "object",
-                    "properties": {
-                        "question": {
-                            "type": "string",
-                            "description": "Question to ask about the photo (e.g. 'What do you see?')",
-                        },
-                    },
-                    "required": ["question"],
+                    "properties": {},
                 },
             ),
             Tool(
@@ -1061,71 +1056,53 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                 },
             ),
             Tool(
-                name="set_led",
+                name="set_led_color",
                 description=(
-                    "Set a single RGB LED on the StackChan base. There are 12 LEDs "
-                    "arranged in two rows of 6 (index 0..11). Updates immediately."
+                    "Set the color of the robot's onboard LED (neon lights). "
+                    "Values are 0-168. "
+                    "Examples: Red=(168,0,0), Green=(0,168,0), Blue=(0,0,168), "
+                    "White=(100,100,100), Off=(0,0,0)."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "index": {
-                            "type": "integer",
-                            "description": "LED index (0..11)",
-                            "minimum": 0,
-                            "maximum": 11,
-                        },
-                        "r": {"type": "integer", "description": "Red 0..255", "minimum": 0, "maximum": 255},
-                        "g": {"type": "integer", "description": "Green 0..255", "minimum": 0, "maximum": 255},
-                        "b": {"type": "integer", "description": "Blue 0..255", "minimum": 0, "maximum": 255},
-                    },
-                    "required": ["index", "r", "g", "b"],
-                },
-            ),
-            Tool(
-                name="set_all_leds",
-                description="Set all 12 RGB LEDs on the StackChan base to the same color. Updates immediately.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "r": {"type": "integer", "description": "Red 0..255", "minimum": 0, "maximum": 255},
-                        "g": {"type": "integer", "description": "Green 0..255", "minimum": 0, "maximum": 255},
-                        "b": {"type": "integer", "description": "Blue 0..255", "minimum": 0, "maximum": 255},
+                        "r": {"type": "integer", "description": "Red 0..168", "minimum": 0, "maximum": 168},
+                        "g": {"type": "integer", "description": "Green 0..168", "minimum": 0, "maximum": 168},
+                        "b": {"type": "integer", "description": "Blue 0..168", "minimum": 0, "maximum": 168},
                     },
                     "required": ["r", "g", "b"],
                 },
             ),
             Tool(
-                name="set_leds",
+                name="create_reminder",
                 description=(
-                    "Set multiple RGB LEDs in one shot. 'colors' is an array of "
-                    "[r,g,b] triples starting at index 0 (e.g. [[255,0,0],[0,255,0]]). "
-                    "Up to 12 entries; extras are ignored, missing entries keep their "
-                    "previous color. Use this for animations / patterns to avoid 12x "
-                    "I2C round-trips."
+                    "Create a reminder that fires after a duration. "
+                    "The robot will say the message when the timer expires."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "colors": {
-                            "type": "array",
-                            "description": "Array of [r,g,b] triples, each 0..255",
-                            "items": {
-                                "type": "array",
-                                "items": {"type": "integer", "minimum": 0, "maximum": 255},
-                                "minItems": 3,
-                                "maxItems": 3,
-                            },
-                            "minItems": 1,
-                            "maxItems": 12,
+                        "duration_seconds": {
+                            "type": "integer",
+                            "description": "Seconds until the reminder fires (1..86400)",
+                            "minimum": 1,
+                            "maximum": 86400,
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "What the robot says when time is up",
+                        },
+                        "repeat": {
+                            "type": "boolean",
+                            "description": "Whether to repeat the reminder",
                         },
                     },
-                    "required": ["colors"],
+                    "required": ["duration_seconds"],
                 },
             ),
             Tool(
-                name="clear_leds",
-                description="Turn off all 12 RGB LEDs on the StackChan base.",
+                name="get_reminders",
+                description="Get the list of active reminders.",
                 inputSchema={"type": "object", "properties": {}},
             ),
             Tool(
@@ -1260,6 +1237,20 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                     "level shifter."
                 ),
                 inputSchema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="stop_reminder",
+                description="Stop a reminder by its ID.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "integer",
+                            "description": "Reminder ID returned by create_reminder",
+                        },
+                    },
+                    "required": ["id"],
+                },
             ),
             Tool(
                 name="say",

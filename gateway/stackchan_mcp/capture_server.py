@@ -95,6 +95,14 @@ class _AvatarStaging:
 # disk consumption on the gateway host.
 CAPTURE_MAX_BYTES = 8 * 1024 * 1024
 
+# Shared state: path of the most recently saved capture
+_latest_capture_path: str = ""
+
+
+def get_latest_capture_path() -> str:
+    """Return the file path of the most recently received capture."""
+    return _latest_capture_path
+
 
 def _is_authorized(auth_header: str, expected_token: str) -> bool:
     """Return whether the bearer auth header matches the expected token."""
@@ -103,6 +111,8 @@ def _is_authorized(auth_header: str, expected_token: str) -> bool:
 
 async def handle_capture(request: web.Request) -> web.Response:
     """Handle photo upload from ESP32."""
+    global _latest_capture_path
+
     expected_token = request.app[CAPTURE_TOKEN_KEY]
     if expected_token and not _is_authorized(
         request.headers.get("Authorization", ""), expected_token
@@ -177,12 +187,8 @@ async def handle_capture(request: web.Request) -> web.Response:
 
     if image_path and os.path.exists(image_path):
         file_size = os.path.getsize(image_path)
-        logger.info(
-            "Captured photo: %s (%d bytes), question: %s",
-            image_path,
-            file_size,
-            question,
-        )
+        logger.info("Captured photo: %s (%d bytes)", image_path, file_size)
+        _latest_capture_path = image_path
         result = json.dumps({
             "image_path": image_path,
             "size_bytes": file_size,
