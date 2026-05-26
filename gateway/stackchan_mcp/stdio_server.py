@@ -341,7 +341,7 @@ async def _dispatch_mcp_tool(
         status = gateway.esp32.get_status()
         return [TextContent(type="text", text=json.dumps(status, indent=2))]
 
-    if name == "say":
+    if name == "speak":
         try:
             result = await synthesize_and_send(arguments, gateway=gateway)
         except (ValueError, NotImplementedError, RuntimeError) as exc:
@@ -1253,7 +1253,7 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                 },
             ),
             Tool(
-                name="say",
+                name="speak",
                 description=(
                     "Speak the given text on the device speaker via gateway-side "
                     "TTS. The gateway synthesises audio, encodes it to Opus, "

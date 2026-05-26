@@ -244,7 +244,7 @@ async def test_list_tools_includes_say():
         ListToolsRequest(method="tools/list")
     )
 
-    tool = next((t for t in result.root.tools if t.name == "say"), None)
+    tool = next((t for t in result.root.tools if t.name == "speak"), None)
     assert tool is not None, "say tool should be registered"
 
     schema = tool.inputSchema
@@ -268,7 +268,7 @@ async def test_say_unknown_voice_returns_clean_error():
         CallToolRequest(
             method="tools/call",
             params={
-                "name": "say",
+                "name": "speak",
                 "arguments": {"text": "hello", "voice": "nonexistent_engine"},
             },
         )
@@ -286,7 +286,7 @@ async def test_say_rejects_empty_text_with_clean_error():
     result = await server.request_handlers[CallToolRequest](
         CallToolRequest(
             method="tools/call",
-            params={"name": "say", "arguments": {"text": ""}},
+            params={"name": "speak", "arguments": {"text": ""}},
         )
     )
 
@@ -322,7 +322,7 @@ async def test_say_returns_clean_error_when_device_disconnected(monkeypatch):
     result = await server.request_handlers[CallToolRequest](
         CallToolRequest(
             method="tools/call",
-            params={"name": "say", "arguments": {"text": "hello"}},
+            params={"name": "speak", "arguments": {"text": "hello"}},
         )
     )
 
@@ -395,7 +395,7 @@ async def test_say_returns_error_json_when_voicevox_returns_5xx(monkeypatch):
     result = await server.request_handlers[CallToolRequest](
         CallToolRequest(
             method="tools/call",
-            params={"name": "say", "arguments": {"text": "hello"}},
+            params={"name": "speak", "arguments": {"text": "hello"}},
         )
     )
     payload = json.loads(result.root.content[0].text)
@@ -454,7 +454,7 @@ async def test_say_returns_error_json_when_device_disconnects_mid_stream(
     result = await server.request_handlers[CallToolRequest](
         CallToolRequest(
             method="tools/call",
-            params={"name": "say", "arguments": {"text": "hello"}},
+            params={"name": "speak", "arguments": {"text": "hello"}},
         )
     )
     payload = json.loads(result.root.content[0].text)
