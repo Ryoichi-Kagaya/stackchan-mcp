@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
 from .audio_utils import (
+    DEVICE_CHANNELS,
     DEVICE_FRAME_DURATION_MS,
     DEVICE_SAMPLE_RATE,
     encode_opus_frames,
@@ -383,6 +385,299 @@ async def send_pcm_audio(
         sent,
         duration_ms,
     )
+
+    return {
+        "source": source_label,
+        "frame_count": sent,
+        "sample_rate": DEVICE_SAMPLE_RATE,
+        "frame_duration_ms": DEVICE_FRAME_DURATION_MS,
+        "duration_ms": duration_ms,
+    }
+
+
+async def send_pcm_stream(
+    gateway: "Gateway",
+    pcm_chunks: AsyncIterator[bytes],
+    *,
+    source_rate: int = DEVICE_SAMPLE_RATE,
+    source_label: str = "stream",
+) -> dict[str, Any]:
+    """Encode and push PCM as it arrives from an async iterator.
+
+    Where :func:`send_pcm_audio` buffers all PCM before encoding,
+    ``send_pcm_stream`` accepts an :class:`~collections.abc.AsyncIterator`
+    of PCM byte chunks and starts pushing Opus frames to the device as
+    soon as enough samples have accumulated for one Opus frame. This
+    keeps long utterances (multi-minute TTS, live audio mixes) playing
+    on the device with low latency, without holding the entire PCM in
+    memory.
+
+    The Opus encoder instance is reused across chunks so the codec's
+    internal state (predictors, gain) stays continuous — a fresh encoder
+    per chunk would produce audible discontinuities at chunk
+    boundaries.
+
+    Args:
+        gateway: The :class:`Gateway` instance whose
+            :attr:`Gateway.esp32` the audio frames are pushed through.
+        pcm_chunks: Async iterator yielding signed-16-bit LE mono PCM
+            byte chunks. Chunk sizes need not be aligned to any boundary;
+            the function buffers partial frames internally. Empty chunks
+            are skipped without error so producers can use them as a
+            "still alive" heartbeat. Iteration finishing (with no
+            chunks left) flushes any trailing partial frame as
+            zero-padded audio and ends the stream cleanly.
+        source_rate: Sample rate of incoming PCM. Each chunk is
+            resampled to :data:`DEVICE_SAMPLE_RATE` independently via
+            linear interpolation; boundary discontinuities are
+            negligible for speech-rate inputs.
+        source_label: Label used in the orchestrator log so streaming
+            producers can be traced separately (e.g.
+            ``"voice-tts:msg_abc123"``).
+
+    Returns:
+        Dict describing the push: ``source``, ``frame_count``,
+        ``sample_rate``, ``frame_duration_ms``, ``duration_ms``. Zero
+        frames is a valid (logged-warning) outcome — e.g. the producer
+        was cancelled before yielding any audio.
+
+    Raises:
+        RuntimeError: if ``gateway`` is missing, no device is connected,
+            the negotiated protocol is not v1, opuslib is unavailable,
+            Opus encoding fails, or the device disconnects mid-stream.
+    """
+    if gateway is None:
+        raise RuntimeError(
+            "send_pcm_stream requires a 'gateway' argument to push audio "
+            "frames; this call appears to be a validation probe without one."
+        )
+
+    if not gateway.esp32.device_connected:
+        raise RuntimeError(
+            "No ESP32 device connected; cannot deliver streamed audio."
+        )
+
+    # WebSocket protocol version gate (same reasoning as send_pcm_audio).
+    connection = getattr(gateway.esp32, "connection", None)
+    proto_version = getattr(connection, "protocol_version", 1)
+    if proto_version != 1:
+        raise RuntimeError(
+            f"send_pcm_stream requires WebSocket protocol v1, but the "
+            f"connected device negotiated v{proto_version}. Rebuild the "
+            "firmware with v1 (the default for this repository) — v2/v3 "
+            "BinaryProtocol header wrapping is not yet supported."
+        )
+
+    # opuslib is the same optional extra used by ``encode_opus_frames``;
+    # we hold the encoder instance across chunks here so importing
+    # eagerly inside this function (rather than going via
+    # ``encode_opus_frames``) gives the clearest install hint when the
+    # extra is missing.
+    try:
+        import opuslib  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "opuslib is not installed. Install with "
+            "'pip install stackchan-mcp[tts]' to enable streamed audio."
+        ) from exc
+
+    samples_per_frame = (
+        DEVICE_SAMPLE_RATE * DEVICE_FRAME_DURATION_MS // 1000
+    )
+    bytes_per_frame = samples_per_frame * 2  # 16-bit
+    # Number of source-rate samples that produce exactly one device-rate
+    # opus frame after resampling. When the input is already at the device
+    # rate this equals ``samples_per_frame`` and the resample step is a
+    # no-op; otherwise we drain whole source-rate frames into the
+    # resampler, which avoids the rounding-error and odd-byte issues that
+    # per-chunk resampling has when transport chunk sizes are arbitrary.
+    src_samples_per_frame = (
+        source_rate * DEVICE_FRAME_DURATION_MS // 1000
+    )
+    if src_samples_per_frame <= 0:
+        raise RuntimeError(
+            f"source_rate {source_rate} is too low for "
+            f"{DEVICE_FRAME_DURATION_MS} ms frames"
+        )
+    bytes_per_src_frame = src_samples_per_frame * 2  # 16-bit
+    encoder = opuslib.Encoder(
+        DEVICE_SAMPLE_RATE, DEVICE_CHANNELS, opuslib.APPLICATION_VOIP
+    )
+
+    tts_lock = getattr(gateway.esp32, "tts_lock", None)
+    lock_ctx = tts_lock if tts_lock is not None else nullcontext()
+
+    sent = 0
+    push_error: ConnectionError | None = None
+    # ``buffer`` accumulates source-rate PCM bytes. Chunks may be odd-byte
+    # (HTTP chunked uploads can split a 16-bit sample across two transport
+    # chunks), so we accumulate raw bytes here and only resample / encode
+    # when the buffer holds at least one full source-rate frame's worth.
+    buffer = bytearray()
+
+    async def _push(opus_frame: bytes) -> bool:
+        """Pace, send, advance counters. Returns False on disconnect."""
+        nonlocal sent, push_error, next_send_time
+        now = loop.time()
+        if now < next_send_time:
+            await asyncio.sleep(next_send_time - now)
+        try:
+            await gateway.esp32.send_audio_frame(opus_frame)
+        except ConnectionError as exc:
+            push_error = exc
+            return False
+        sent += 1
+        # Advance the schedule from whichever is later: the previous
+        # target (when we kept up — preserves the underlying 20 ms
+        # cadence and absorbs sub-frame jitter), or the actual current
+        # time (when the upstream producer paused — re-anchors pacing
+        # so the next yielded chunk does not burst frames back-to-back
+        # to "catch up" the stale schedule). Without this re-anchor a
+        # producer pause longer than ``frame_period_s`` lets multiple
+        # post-pause frames fire in one event-loop turn, exceeding the
+        # firmware's ~40-packet decode queue and silently dropping
+        # audio. The streaming use cases this helper is designed for
+        # (HTTP chunked uploads, real-time TTS synthesis jitter)
+        # routinely produce such pauses.
+        next_send_time = max(next_send_time, loop.time()) + frame_period_s
+        return True
+
+    async with lock_ctx:
+        try:
+            await gateway.esp32.send_tts_state("start")
+        except ConnectionError as exc:
+            raise RuntimeError(
+                f"Device disconnected before TTS start notification: {exc}"
+            ) from exc
+
+        await asyncio.sleep(TTS_START_TRANSITION_DELAY_S)
+
+        frame_period_s = DEVICE_FRAME_DURATION_MS / 1000.0
+        loop = asyncio.get_event_loop()
+        next_send_time = loop.time()
+
+        try:
+            async for chunk in pcm_chunks:
+                if not chunk:
+                    # Empty chunk = heartbeat / cancellation tick; keep
+                    # the loop alive without advancing the audio.
+                    continue
+
+                # Accumulate raw source-rate bytes. Resampling per chunk
+                # used to live here but produced two bugs noted in PR
+                # review: (a) ``resample_pcm16_linear`` raises ValueError
+                # on odd-byte chunks because transport chunk boundaries
+                # can split a 16-bit sample, and (b) rounding inside
+                # ``resample_pcm16_linear`` (``n_dst = max(1, n_src *
+                # dst_rate // src_rate)``) accumulates duration error
+                # when called on small chunks repeatedly. Accumulating
+                # to whole source-rate frames before resampling fixes
+                # both.
+                buffer.extend(chunk)
+
+                # Drain as many full source-rate frames as the buffer
+                # now holds. Each whole source frame resamples to
+                # exactly ``samples_per_frame`` device samples, so the
+                # rounding stays consistent across chunks regardless of
+                # transport chunking.
+                while len(buffer) >= bytes_per_src_frame:
+                    src_frame = bytes(buffer[:bytes_per_src_frame])
+                    del buffer[:bytes_per_src_frame]
+                    if source_rate != DEVICE_SAMPLE_RATE:
+                        pcm_frame = resample_pcm16_linear(
+                            src_frame, source_rate, DEVICE_SAMPLE_RATE
+                        )
+                        # Resampler should produce exactly one device
+                        # frame; pad / truncate defensively so the
+                        # opus encoder gets the size it expects.
+                        if len(pcm_frame) > bytes_per_frame:
+                            pcm_frame = pcm_frame[:bytes_per_frame]
+                        elif len(pcm_frame) < bytes_per_frame:
+                            pcm_frame = pcm_frame + b"\x00" * (
+                                bytes_per_frame - len(pcm_frame)
+                            )
+                    else:
+                        pcm_frame = src_frame
+                    try:
+                        opus_frame = encoder.encode(
+                            pcm_frame, samples_per_frame
+                        )
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Opus encoding failed: {exc}"
+                        ) from exc
+
+                    if not await _push(opus_frame):
+                        break  # device disconnected mid-stream
+
+                if push_error is not None:
+                    break
+
+            # Stream ended cleanly: flush any trailing partial frame as
+            # zero-padded audio so the last few milliseconds of speech
+            # aren't silently dropped. We zero-pad in the source rate
+            # space first (down to 16-bit sample alignment, then up to
+            # one source-rate frame), then resample once to a device
+            # frame, mirroring the per-frame logic above.
+            if push_error is None and len(buffer) > 0:
+                tail_src = bytes(buffer)
+                if len(tail_src) % 2 != 0:
+                    # Drop a stray byte rather than crash. The producer
+                    # protocol expects 16-bit aligned PCM; a half sample
+                    # at EOS has no defined interpretation.
+                    tail_src = tail_src[:-1]
+                if len(tail_src) > 0:
+                    if len(tail_src) < bytes_per_src_frame:
+                        tail_src = tail_src + b"\x00" * (
+                            bytes_per_src_frame - len(tail_src)
+                        )
+                    if source_rate != DEVICE_SAMPLE_RATE:
+                        tail = resample_pcm16_linear(
+                            tail_src, source_rate, DEVICE_SAMPLE_RATE
+                        )
+                        if len(tail) > bytes_per_frame:
+                            tail = tail[:bytes_per_frame]
+                        elif len(tail) < bytes_per_frame:
+                            tail = tail + b"\x00" * (
+                                bytes_per_frame - len(tail)
+                            )
+                    else:
+                        tail = tail_src
+                    try:
+                        opus_frame = encoder.encode(
+                            tail, samples_per_frame
+                        )
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Opus encoding failed: {exc}"
+                        ) from exc
+                    await _push(opus_frame)
+        finally:
+            try:
+                await gateway.esp32.send_tts_state("stop")
+            except ConnectionError:
+                pass
+
+    if push_error is not None:
+        raise RuntimeError(
+            f"Device disconnected after sending {sent} frames: {push_error}"
+        ) from push_error
+
+    duration_ms = sent * DEVICE_FRAME_DURATION_MS
+
+    if sent == 0:
+        logger.warning(
+            "send_pcm_stream: source=%s yielded no audio (producer "
+            "cancelled or empty stream)",
+            source_label,
+        )
+    else:
+        logger.info(
+            "send_pcm_stream: source=%s frames=%d duration_ms=%d",
+            source_label,
+            sent,
+            duration_ms,
+        )
 
     return {
         "source": source_label,
