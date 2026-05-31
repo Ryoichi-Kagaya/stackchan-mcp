@@ -132,16 +132,13 @@ def _is_wildcard_host(host: str) -> bool:
 
 
 def _build_service_hostname() -> str:
-    label = socket.gethostname().split(".", 1)[0]
-    safe_label = "".join(
-        char.lower()
-        if char.isascii() and (char.isalnum() or char == "-")
-        else "-"
-        for char in label
-    ).strip("-")
-    if not safe_label:
-        return FALLBACK_SERVICE_HOSTNAME
-    return f"{safe_label}.local."
+    """Return a service-specific mDNS hostname for the SRV record.
+
+    Uses a fixed name to avoid advertising A records that overlap with
+    the system's own Bonjour hostname registration, which can trigger
+    macOS to change the user's LocalHostName.
+    """
+    return FALLBACK_SERVICE_HOSTNAME
 
 
 def _iter_ifaddr_ipv4_addresses() -> list[tuple[str, int | None]]:
@@ -288,9 +285,20 @@ class MdnsAdvertiser:
             raise
         self._zeroconf = zeroconf
         self._service_info = info
+        registered_name = getattr(info, "name", advertisement.service_name)
+        if registered_name != advertisement.service_name:
+            logger.warning(
+                "mDNS service registered under a modified name %s (requested %s). "
+                "A previous gateway instance may not have shut down cleanly and its "
+                "registration is still visible on the network. The ESP32 still "
+                "discovers this gateway by service type, so auto-discovery keeps "
+                "working; the stale entry clears when its mDNS TTL expires.",
+                registered_name,
+                advertisement.service_name,
+            )
         logger.info(
             "mDNS advertising %s on port %d with addresses %s",
-            getattr(info, "name", advertisement.service_name),
+            registered_name,
             advertisement.port,
             ", ".join(advertisement.parsed_addresses),
         )

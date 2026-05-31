@@ -23,6 +23,10 @@ def test_service_type_and_txt_defaults() -> None:
     assert advertisement.parsed_addresses == ["192.0.2.10"]
 
 
+def test_service_hostname_is_service_specific() -> None:
+    assert mdns._build_service_hostname() == "stackchan-mcp.local."
+
+
 def test_wildcard_host_advertises_all_usable_non_loopback_ipv4(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -238,6 +242,68 @@ async def test_advertiser_registers_service(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert zeroconf.unregistered == [info]
     assert zeroconf.closed is True
+
+
+@pytest.mark.asyncio
+async def test_advertiser_warns_when_service_name_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    instances: list[RenamingAsyncZeroconf] = []
+    renamed_service_name = "stackchan-mcp-2._stackchan-mcp._tcp.local."
+
+    class FakeServiceInfo:
+        def __init__(self, service_type: str, service_name: str, **kwargs) -> None:
+            self.type = service_type
+            self.name = service_name
+            self.kwargs = kwargs
+
+    class RenamingAsyncZeroconf:
+        def __init__(self) -> None:
+            self.registered = []
+            self.unregistered = []
+            self.closed = False
+            instances.append(self)
+
+        async def async_register_service(
+            self, info: FakeServiceInfo, *, allow_name_change: bool = False
+        ) -> None:
+            self.registered.append((info, allow_name_change))
+            info.name = renamed_service_name
+
+        async def async_unregister_service(self, info: FakeServiceInfo) -> None:
+            self.unregistered.append(info)
+
+        async def async_close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(
+        mdns,
+        "_load_zeroconf_classes",
+        lambda: (RenamingAsyncZeroconf, FakeServiceInfo),
+    )
+    caplog.set_level("WARNING", logger=mdns.__name__)
+
+    advertiser = MdnsAdvertiser()
+    await advertiser.start(host="192.0.2.10", port=8765, path="/")
+
+    assert len(instances) == 1
+    zeroconf = instances[0]
+    assert len(zeroconf.registered) == 1
+    info, allow_name_change = zeroconf.registered[0]
+    assert allow_name_change is True
+    assert info.name == renamed_service_name
+    assert zeroconf.closed is False
+    assert advertiser._zeroconf is zeroconf
+    assert advertiser._service_info is info
+    assert "modified name" in caplog.text
+    assert renamed_service_name in caplog.text
+
+    await advertiser.stop()
+
+    assert zeroconf.unregistered == [info]
+    assert zeroconf.closed is True
+
 
 @pytest.mark.asyncio
 async def test_advertiser_closes_zeroconf_when_registration_fails(
