@@ -774,6 +774,12 @@ private:
         kPartial = 1,
         kReleased = 2,
         kReleasing = 3,
+        // Published when InternalSetServoTorque cannot confirm bus success
+        // for both axes. Forward-progress invariant: the next motion / manual
+        // call issues a real bus frame instead of short-circuiting. Mirrors
+        // the WritePos retries-exhausted -> position_unknown convention for
+        // the torque domain.
+        kUncertain = 4,
     };
     std::atomic<TorqueState> torque_state_{TorqueState::kEngaged};
     std::atomic<uint32_t> torque_release_epoch_{0};
@@ -3207,6 +3213,41 @@ private:
             return result;
         };
 
+        auto publish_after_bus_attempt = [&](TorqueState pre_bus_state) {
+            const bool any_axis_bus_failed =
+                !result.yaw_ok || !result.pitch_ok;
+            if (!any_axis_bus_failed) {
+                // Success-path cached-state ownership is pre-existing and
+                // tracked separately under Issue #172.
+                PublishTorqueState();
+                return;
+            }
+            TorqueState expected = pre_bus_state;
+            if (torque_state_.compare_exchange_strong(
+                    expected,
+                    TorqueState::kUncertain,
+                    std::memory_order_release,
+                    std::memory_order_acquire)) {
+                ESP_LOGW(TAG,
+                         "set_servo_torque (reason=%s): publishing kUncertain; "
+                         "bus confirmation failed for yaw_failed=%d (r=%d) "
+                         "pitch_failed=%d (r=%d)",
+                         ReleaseReasonName(reason),
+                         result.yaw_ok ? 0 : 1, result.yaw_bus_return,
+                         result.pitch_ok ? 0 : 1, result.pitch_bus_return);
+            } else {
+                ESP_LOGW(TAG,
+                         "set_servo_torque (reason=%s): kUncertain publish "
+                         "skipped; torque_state_ advanced from %d to %d "
+                         "(likely MarkReleasing()); leaving concurrent state "
+                         "intact. bus_return yaw=%d pitch=%d",
+                         ReleaseReasonName(reason),
+                         static_cast<int>(pre_bus_state),
+                         static_cast<int>(expected),
+                         result.yaw_bus_return, result.pitch_bus_return);
+            }
+        };
+
         if (!servo_ok_ || scs_bus_mutex_ == nullptr) {
             // Servo subsystem unavailable: not a short-circuit and not a
             // wait timeout. yaw_ok/pitch_ok stay false, so ok is false.
@@ -3236,10 +3277,11 @@ private:
                         log_result(ExitKind::kWaitExhausted);
                         return result;
                     }
-                    // After the wait, state may be kEngaged (OFF failed and
-                    // rolled back) or kReleased (OFF succeeded). Fall through
-                    // to the existing (true, true) logic, which short-circuits
-                    // on kEngaged and proceeds normally on kReleased/kPartial.
+                    // After the wait, state may be kEngaged (OFF rolled
+                    // back), kReleased (OFF succeeded), or kUncertain (OFF
+                    // bus confirmation failed). Fall through to the existing
+                    // (true, true) logic, which short-circuits on kEngaged and
+                    // proceeds normally on kReleased/kPartial/kUncertain.
                 }
             }
 
@@ -3282,6 +3324,8 @@ private:
                     xSemaphoreGive(scs_bus_mutex_);
                     return result;
                 }
+                const TorqueState pre_bus_state =
+                    torque_state_.load(std::memory_order_acquire);
                 result.yaw_bus_return =
                     scs_bus_.EnableTorque(SERVO_YAW_ID, 1);
                 result.pitch_bus_return =
@@ -3293,7 +3337,7 @@ private:
                 if (result.pitch_ok) {
                     pitch_torque_enabled_ = true;
                 }
-                PublishTorqueState();
+                publish_after_bus_attempt(pre_bus_state);
                 // Real bus write attempted; ok is governed by yaw_ok/pitch_ok.
                 log_result(ExitKind::kBusAction);
                 xSemaphoreGive(scs_bus_mutex_);
@@ -3383,6 +3427,8 @@ private:
                     return result;
                 }
             }
+            const TorqueState pre_bus_state =
+                torque_state_.load(std::memory_order_acquire);
             result.yaw_bus_return = scs_bus_.EnableTorque(
                 SERVO_YAW_ID, yaw_enabled ? 1 : 0);
             result.pitch_bus_return = scs_bus_.EnableTorque(
@@ -3394,7 +3440,7 @@ private:
             if (result.pitch_ok) {
                 pitch_torque_enabled_ = pitch_enabled;
             }
-            PublishTorqueState();
+            publish_after_bus_attempt(pre_bus_state);
             // Real bus write attempted; ok is governed by yaw_ok/pitch_ok.
             log_result(ExitKind::kBusAction);
             xSemaphoreGive(scs_bus_mutex_);
@@ -3425,7 +3471,8 @@ private:
             }
         }
 
-        // state is kPartial or kReleased -- safe to re-engage now.
+        // state is kPartial, kReleased, or kUncertain -- safe to
+        // re-engage now.
         InternalSetServoTorque(true, true, ReleaseReason::kReengagement);
     }
 
@@ -3465,10 +3512,17 @@ private:
             last_motion_end_valid_ = false;
         }
         // Keep the idle window scoped to the currently engaged interval.
-        // Released/partial/releasing states must not age a stale timer into
-        // the next re-engage.
-        if (torque_state_.load(std::memory_order_acquire) !=
-            TorqueState::kEngaged) {
+        // Released/partial/releasing states must not age a stale timer
+        // into the next re-engage. kUncertain is treated as engaged for
+        // auto-release purposes: if the kAutoIdle OFF bus frame was lost
+        // on the UART path, the auto-release retry must continue so the
+        // device does not strand with torque physically ON; if the OFF
+        // was actually delivered, the next retry short-circuits via the
+        // idempotent path (Issue #170 follow-up).
+        auto current_state =
+            torque_state_.load(std::memory_order_acquire);
+        if (current_state != TorqueState::kEngaged &&
+            current_state != TorqueState::kUncertain) {
             last_motion_end_valid_ = false;
             return;
         }

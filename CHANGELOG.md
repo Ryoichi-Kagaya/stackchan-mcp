@@ -32,6 +32,21 @@ documented-only.
 
 ### Firmware
 
+- Add `kUncertain` state to `TorqueState`: an `EnableTorque(OFF)` (or
+  `ON`) attempt that loses its ACK no longer publishes `kEngaged` from
+  cached state. Subsequent motion or manual `set_servo_torque(...)`
+  calls now issue a real bus frame instead of short-circuiting on stale
+  state, guaranteeing forward progress without requiring a PMIC OFF/ON
+  cycle. The `kUncertain` publish itself is guarded by a
+  `compare_exchange` against a pre-bus state observation, so a
+  concurrent `MarkReleasing()` is not erased. The
+  `MaybeAutoReleaseTorque()` guard treats `kUncertain` as engaged so
+  the #168 Phase 4 cumulative-WritePos mitigation continues to retry
+  the OFF after an ACK loss rather than stranding torque physically
+  ON; the retry short-circuits via the idempotent path if the OFF was
+  actually delivered. Closes the Phase 4 ACK-loss trade-off carved
+  out from #168. (#170)
+
 - Changed: split `set_servo_torque` MCP response field `short_circuited` into orthogonal `idempotent_short_circuit` and `wait_exhausted` flags to distinguish degraded-bus wait-budget exhaustion (where no `EnableTorque` bus frame went out) from idempotent no-op success (where state already matched the request). The `ok` field now correctly returns `false` on wait-exhaustion. **Breaking change** for callers reading the old `short_circuited` field directly. (#171)
 
 - Fixed: empty WebSocket gateway discovery results now fall through to the shared reconnect failure path, clearing the intentional-close latch so retries continue after a gateway restart.
