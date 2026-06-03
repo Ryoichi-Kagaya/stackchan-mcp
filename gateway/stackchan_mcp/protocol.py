@@ -41,6 +41,7 @@ class HelloResponse(BaseModel):
     version: int = 1
     transport: str = "websocket"
     session_id: str | None = None
+    audio_params: AudioParams | None = None
 
 
 # ---------------------------------------------------------------------------
