@@ -19,6 +19,7 @@ import logging
 import os
 import platform
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -108,6 +109,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--no-mdns",
         action="store_true",
         help="Disable mDNS/DNS-SD advertisement for the WebSocket endpoint.",
+    )
+    parser.add_argument(
+        "--gateway-only",
+        action="store_true",
+        help=(
+            "Start the ESP32 WebSocket gateway without the stdio MCP server. "
+            "Use this when running the gateway as a standalone background process "
+            "(e.g. alongside familiar-ai voice server) rather than as a stdio MCP "
+            "tool provider for an MCP client."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", metavar="{serve}")
     serve_parser = subparsers.add_parser(
@@ -691,8 +702,8 @@ def _run_preflight() -> int:
     return 1
 
 
-async def _run(*, advertise_mdns: bool = True) -> None:
-    """Start both the ESP32 WebSocket server and the stdio MCP server."""
+async def _run(*, advertise_mdns: bool = True, gateway_only: bool = False) -> None:
+    """Start the ESP32 WebSocket gateway, and optionally the stdio MCP server."""
     import signal
 
     from .event_log import rotate_old_entries
@@ -727,8 +738,19 @@ async def _run(*, advertise_mdns: bool = True) -> None:
     logger.info("Gateway started, waiting for ESP32 connections...")
 
     try:
-        # Run stdio MCP server (blocks until MCP client disconnects)
-        await run_stdio_server(notify_config=notify_config)
+        if gateway_only:
+            # Block until SIGINT/SIGTERM without starting a stdio MCP server.
+            loop = asyncio.get_running_loop()
+            stop = loop.create_future()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                try:
+                    loop.add_signal_handler(sig, stop.set_result, None)
+                except NotImplementedError:
+                    pass
+            await stop
+        else:
+            # Run stdio MCP server (blocks until MCP client disconnects)
+            await run_stdio_server(notify_config=notify_config)
     except asyncio.CancelledError:
         logger.info("Received termination signal, shutting down...")
     finally:
@@ -795,14 +817,14 @@ def _prepare_stdio_startup() -> "LockInfo":
     return _acquire_startup_lock()
 
 
-def _run_stdio_gateway(*, advertise_mdns: bool = True) -> None:
+def _run_stdio_gateway(*, advertise_mdns: bool = True, gateway_only: bool = False) -> None:
     """Run the existing stdio MCP gateway flow."""
     from .ownership import release_lock_if_owner
 
     info = _prepare_stdio_startup()
     try:
         try:
-            asyncio.run(_run(advertise_mdns=advertise_mdns))
+            asyncio.run(_run(advertise_mdns=advertise_mdns, gateway_only=gateway_only))
         except KeyboardInterrupt:
             pass
     finally:
@@ -942,7 +964,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_preflight())
 
     if args.command is None:
-        _run_stdio_gateway(advertise_mdns=not args.no_mdns)
+        _run_stdio_gateway(advertise_mdns=not args.no_mdns, gateway_only=args.gateway_only)
         return
 
     if args.command == "serve":
