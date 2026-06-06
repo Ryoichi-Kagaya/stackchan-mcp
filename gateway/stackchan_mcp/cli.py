@@ -62,6 +62,10 @@ Environment variables:
                            (default 8765).
   CAPTURE_PORT             Port for the HTTP capture server
                            (default 8766).
+  MCP_PORT                 Port for the SSE MCP server (default unset = disabled).
+                           Set to e.g. 8767 to expose an SSE MCP endpoint at
+                           http://HOST:MCP_PORT/sse for MCP clients that prefer
+                           HTTP transport over spawning a stdio subprocess.
   MCP_HTTP_HOST            Bind address for the Streamable HTTP MCP server
                            (default 127.0.0.1).
   MCP_HTTP_PORT            Port for the Streamable HTTP MCP server
@@ -703,7 +707,8 @@ def _run_preflight() -> int:
 
 
 async def _run(*, advertise_mdns: bool = True, gateway_only: bool = False) -> None:
-    """Start the ESP32 WebSocket gateway, and optionally the stdio MCP server."""
+    """Start the ESP32 WebSocket gateway, and optionally the stdio or SSE MCP server."""
+    import contextlib
     import signal
 
     from .event_log import rotate_old_entries
@@ -737,9 +742,15 @@ async def _run(*, advertise_mdns: bool = True, gateway_only: bool = False) -> No
     await gateway.start(advertise_mdns=advertise_mdns)
     logger.info("Gateway started, waiting for ESP32 connections...")
 
+    host = os.getenv("HOST", "0.0.0.0")
+    mcp_port_raw = os.getenv("MCP_PORT", "").strip()
+    mcp_port = int(mcp_port_raw) if mcp_port_raw else 0
+
     try:
         if gateway_only:
-            # Block until SIGINT/SIGTERM without starting a stdio MCP server.
+            # Block until SIGINT/SIGTERM.  If MCP_PORT is set, also run an
+            # SSE MCP server so that MCP clients (e.g. familiar-ai) can
+            # connect without spawning a second gateway subprocess.
             loop = asyncio.get_running_loop()
             stop = loop.create_future()
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -747,7 +758,18 @@ async def _run(*, advertise_mdns: bool = True, gateway_only: bool = False) -> No
                     loop.add_signal_handler(sig, stop.set_result, None)
                 except NotImplementedError:
                     pass
-            await stop
+
+            if mcp_port:
+                from .stdio_server import run_sse_server
+                sse_task = asyncio.create_task(run_sse_server(host, mcp_port))
+                try:
+                    await stop
+                finally:
+                    sse_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await sse_task
+            else:
+                await stop
         else:
             # Run stdio MCP server (blocks until MCP client disconnects)
             await run_stdio_server(notify_config=notify_config)

@@ -1,6 +1,6 @@
-"""stdio MCP server for MCP client.
+"""stdio and SSE MCP server for MCP clients.
 
-Exposes stackchan tools via the MCP Python SDK's stdio transport.
+Exposes stackchan tools via the MCP Python SDK's stdio or SSE transport.
 Each tool call is relayed to the connected ESP32 device.
 """
 
@@ -1681,3 +1681,51 @@ async def run_stdio_server(notify_config: NotifyConfig | None = None) -> None:
             write_stream,
             _create_initialization_options(server, notify_config),
         )
+
+
+async def run_sse_server(host: str, port: int) -> None:
+    """Run an SSE MCP server on host:port as an asyncio task.
+
+    Exposes /sse (GET, EventSource endpoint) and /messages/ (POST, JSON-RPC).
+    Runs until cancelled; callers should cancel the task on shutdown.
+    """
+    try:
+        from starlette.applications import Starlette
+        from starlette.requests import Request
+        from starlette.routing import Mount, Route
+        import uvicorn
+        from mcp.server.sse import SseServerTransport
+    except ImportError as exc:
+        logger.error("SSE MCP server requires starlette and uvicorn: %s", exc)
+        return
+
+    mcp_server = create_server()
+    sse_transport = SseServerTransport("/messages/")
+
+    async def handle_sse(request: Request) -> None:
+        async with sse_transport.connect_sse(
+            request.scope, request.receive, request._send  # type: ignore[attr-defined]
+        ) as (read_stream, write_stream):
+            await mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp_server.create_initialization_options(),
+            )
+
+    app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse_transport.handle_post_message),
+        ]
+    )
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="warning",
+        install_signal_handlers=False,
+    )
+    server_instance = uvicorn.Server(config)
+    logger.info("SSE MCP server starting on http://%s:%d/sse", host, port)
+    await server_instance.serve()
