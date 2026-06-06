@@ -11,6 +11,7 @@ from collections.abc import Sequence
 import json
 import logging
 import os
+import socket
 import time
 import uuid
 from typing import Any
@@ -478,12 +479,13 @@ class ESP32Manager:
                 audio_hook_url,
             )
         logger.info("ESP32 WebSocket server starting on ws://%s:%d", host, port)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
         self._server = await websockets.serve(
             self._handler,
-            host,
-            port,
+            sock=sock,
             process_request=self._check_auth,
-            reuse_address=True,
         )
 
     async def stop(self) -> None:
