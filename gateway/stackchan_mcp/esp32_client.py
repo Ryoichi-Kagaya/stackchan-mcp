@@ -483,6 +483,7 @@ class ESP32Manager:
             host,
             port,
             process_request=self._check_auth,
+            reuse_address=True,
         )
 
     async def stop(self) -> None:
