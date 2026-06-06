@@ -154,6 +154,12 @@ class ConversationManager:
             return
         logger.info("conversation: STT result=%r", text[:120])
 
+        # Show user speech bubble while familiar-ai processes the reply
+        try:
+            await self._esp32.send_stt_text(text)
+        except Exception as exc:
+            logger.warning("conversation: failed to send STT display text: %s", exc)
+
         # --- familiar-ai ---
         try:
             result = await call_familiar(text, self._familiar_url)
@@ -220,8 +226,14 @@ class ConversationManager:
         tts_lock = esp32.tts_lock
 
         async with tts_lock:
-            # Send tts.start with emotion so the device updates its face
+            # Update the display face before audio starts.
+            # llm.emotion is the only message the firmware actually reads for
+            # SetEmotion(); the emotion field in tts.start is ignored.
+            await esp32.send_llm_emotion(emotion)
+            # tts.start transitions the device into kDeviceStateSpeaking so
+            # it begins accepting Opus frames from the decode queue.
             await esp32.send_tts_state("start", emotion=emotion)
+            await esp32.send_tts_state("sentence_start", text=text)
             await asyncio.sleep(TTS_START_TRANSITION_DELAY_S)
 
             # Push Opus frames at the device's consumption rate to avoid

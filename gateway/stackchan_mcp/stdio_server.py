@@ -401,6 +401,33 @@ async def _dispatch_mcp_tool(
             )
         ]
 
+    if name == "set_emotion":
+        emotion = arguments.get("emotion", "neutral")
+        try:
+            await gateway.esp32.send_llm_emotion(emotion)
+        except ConnectionError as exc:
+            return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
+        return [TextContent(type="text", text=json.dumps({"ok": True, "emotion": emotion}))]
+
+    if name == "alert":
+        status = arguments.get("status", "")
+        message_text = arguments.get("message", "")
+        emotion = arguments.get("emotion", "neutral")
+        if not status or not message_text:
+            return [TextContent(type="text", text=json.dumps({"error": "status and message are required"}))]
+        try:
+            await gateway.esp32.send_alert(status, message_text, emotion)
+        except ConnectionError as exc:
+            return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
+        return [TextContent(type="text", text=json.dumps({"ok": True}))]
+
+    if name == "reboot":
+        try:
+            await gateway.esp32.send_system_reboot()
+        except ConnectionError as exc:
+            return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
+        return [TextContent(type="text", text=json.dumps({"ok": True, "message": "Reboot command sent"}))]
+
     if name == "move_head":
         yaw_val = arguments.get("yaw")
         pitch_val = arguments.get("pitch")
@@ -1388,6 +1415,69 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                             "maximum": 85,
                         },
                     },
+                },
+            ),
+            Tool(
+                name="set_emotion",
+                description=(
+                    "Update the robot's display face expression immediately. "
+                    "Uses the llm.emotion wire message, which is the only "
+                    "server-driven path the firmware reads for SetEmotion(). "
+                    "Common values: neutral, happy, sad, surprised, thinking, "
+                    "embarrassed, angry, triangle_exclamation, circle_xmark, "
+                    "cloud_slash, link, download."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "emotion": {
+                            "type": "string",
+                            "description": "Emotion / icon name to display.",
+                        },
+                    },
+                    "required": ["emotion"],
+                },
+            ),
+            Tool(
+                name="alert",
+                description=(
+                    "Show an alert on the robot's display and play the "
+                    "vibration sound. Sets the status bar text, the face "
+                    "expression, and a system chat bubble simultaneously. "
+                    "Use for errors, warnings, or attention-grabbing notices."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "description": "Short status label shown in the top bar (e.g. 'Error', 'Warning').",
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Message text shown in the chat bubble.",
+                        },
+                        "emotion": {
+                            "type": "string",
+                            "description": (
+                                "Face / icon to display during the alert "
+                                "(e.g. 'triangle_exclamation', 'circle_xmark', 'neutral')."
+                            ),
+                        },
+                    },
+                    "required": ["status", "message", "emotion"],
+                },
+            ),
+            Tool(
+                name="reboot",
+                description=(
+                    "Reboot the ESP32 device. "
+                    "The device will disconnect and restart firmware. "
+                    "Use only when a hardware reset is genuinely needed."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
                 },
             ),
             Tool(
