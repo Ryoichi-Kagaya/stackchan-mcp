@@ -12,7 +12,7 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 60.0
 
 
 async def call_familiar(text: str, url: str) -> dict[str, Any]:
