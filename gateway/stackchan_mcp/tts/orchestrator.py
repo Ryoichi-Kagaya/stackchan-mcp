@@ -48,10 +48,8 @@ TTS_START_TRANSITION_DELAY_S = 0.05
 logger = logging.getLogger(__name__)
 
 
-#: Built-in default engine name when ``voice`` is omitted from the tool
-#: call and ``STACKCHAN_TTS_ENGINE`` is unset. VOICEVOX is the canonical
-#: default (Issue #70).
-DEFAULT_VOICE = "voicevox"
+#: Default engine name when ``voice`` is omitted from the tool call.
+DEFAULT_VOICE = "elevenlabs"
 
 #: Environment variable that overrides the default engine selected when a
 #: ``say`` call omits ``voice``. The per-call ``voice`` argument still

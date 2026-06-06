@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_STT_ENGINE = "faster-whisper"
-DEFAULT_TTS_ENGINE = "voicevox"
+DEFAULT_TTS_ENGINE = "elevenlabs"
 DEFAULT_STT_LANGUAGE = "ja"
 
 # Max time to wait for listen.stop after listen.start.
