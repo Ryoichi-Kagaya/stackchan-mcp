@@ -494,22 +494,57 @@ the `listen` API.
 
 ### 6. Optional: enable event notifications
 
-Stack-chan physical events (touch tap / stroke) can be delivered through
-several notification paths, depending on host capabilities. All paths are
-disabled by default; opt in via `~/.config/stackchan-mcp/notify.yml`. The
-Channels mechanism uses an experimental MCP capability and may evolve.
+Stack-chan physical events (today: touch tap / stroke; the structure
+allows additional subtypes to be appended later) can be delivered
+through three notification channels. All channels are disabled by
+default; opt in via `~/.config/stackchan-mcp/notify.yml`. More than
+one channel can be enabled at the same time; each event is then
+delivered over every enabled channel. Pick whichever match the host
+you are integrating with:
 
-To enable Channels notifications:
+- `channels` — Claude Code plugin path. Notifications are injected
+  into the running session as `<channel ...>` blocks via Claude Code's
+  experimental Channels capability. Use this when Stack-chan is wired
+  into Claude Code as an installed plugin and you want events to reach
+  the conversation in-band.
+- `jsonl` — Out-of-process file integration. Each event is appended
+  as a single JSON line to a file you configure. Use this when an
+  external host (anything other than Claude Code, or your own
+  pipeline) needs to ingest events asynchronously by tailing a file.
+- `legacy_event` — Pre-plugin MCP notification. The gateway emits the
+  self-defined `stackchan/event` MCP notification method, which
+  existed before the Channels capability shipped. Use this for
+  backward compatibility when the host wires the gateway via
+  `~/.claude.json` `mcpServers` rather than the Claude Code plugin
+  path.
 
-1. Gateway side — turn Channels on in `~/.config/stackchan-mcp/notify.yml`:
+See `notify.example.yml` for the full annotated configuration
+reference.
 
-   ```yaml
-   channels:
-     enabled: true
-   ```
+#### Channel: `channels` (Claude Code plugin path)
 
-2. Plugin installation — install this repository as a Claude Code plugin
-   from the `kisaragi-mochi-channels` marketplace:
+Use when Stack-chan is loaded as a Claude Code plugin and you want
+events delivered as in-session channel blocks. This channel uses an
+experimental MCP capability that may evolve.
+
+Enable in `notify.yml`:
+
+```yaml
+channels:
+  enabled: true
+```
+
+Delivered as a `<channel ...>` block injected into the Claude Code
+session, for example:
+
+```
+<channel source="plugin:stackchanmcp:stackchanmcp" ...>head was tapped</channel>
+```
+
+Setup:
+
+1. Plugin installation — install this repository as a Claude Code
+   plugin from the `kisaragi-mochi-channels` marketplace:
 
    ```bash
    claude plugin install stackchanmcp@kisaragi-mochi-channels
@@ -520,7 +555,7 @@ To enable Channels notifications:
    marketplace; Claude Code starts the gateway under
    `${CLAUDE_PLUGIN_ROOT}/gateway` via the bundled `.mcp.json`.
 
-3. Host environment setup — the Channels delivery path requires three
+2. Host environment setup — the Channels delivery path requires three
    host-side names to be aligned with the gateway's MCP server name
    (`stackchanmcp`, no hyphen):
 
@@ -542,7 +577,7 @@ To enable Channels notifications:
      }
      ```
 
-4. Receiver side — launch Claude Code with the Channels flags:
+3. Receiver side — launch Claude Code with the Channels flags:
 
    ```bash
    claude --channels plugin:stackchanmcp@kisaragi-mochi-channels \
@@ -559,27 +594,24 @@ To enable Channels notifications:
    versions. The flag is expected to become optional once the plugin's
    Channels capability stabilizes.
 
-   Important — pre-plugin wiring does not receive Channels: if you
-   previously wired this gateway via `~/.claude.json` `mcpServers`
-   (the pre-plugin path), that wiring does not receive `<channel ...>`
-   injections. Claude Code only attaches a channel source to
-   plugin-loaded MCP servers. Before switching to the plugin path,
-   stop any existing gateway process to release the ESP32 ownership
-   lock; the plugin-loaded gateway will otherwise fail to acquire it.
-   If you prefer to keep the `~/.claude.json` wiring, use
-   `legacy_event` and `jsonl` instead of `channels` — both work
-   without plugin loading.
+Important — pre-plugin wiring does not receive Channels: if you
+previously wired this gateway via `~/.claude.json` `mcpServers` (the
+pre-plugin path), that wiring does not receive `<channel ...>`
+injections. Claude Code only attaches a channel source to
+plugin-loaded MCP servers. Before switching to the plugin path, stop
+any existing gateway process to release the ESP32 ownership lock; the
+plugin-loaded gateway will otherwise fail to acquire it. If you prefer
+to keep the `~/.claude.json` wiring, use the `legacy_event` or `jsonl`
+channel below — both work without plugin loading.
 
-5. Other hosts:
+Other hosts:
 
-   - **Hosts with a `claude/channel`-compatible receiver**: open that
-     receiver per the host's documentation. Compatibility with hosts
-     other than Claude Code has not been verified in this repository.
+- Hosts with a `claude/channel`-compatible receiver: open that
+  receiver per the host's documentation. Compatibility with hosts
+  other than Claude Code has not been verified in this repository.
+- Hosts without a Channels receiver: use the `jsonl` channel below.
 
-   - **Hosts without a Channels receiver**: use the JSONL fallback (see
-     below).
-
-#### Migration from the previous `stackchan-mcp` (hyphenated) form
+##### Migration from the previous `stackchan-mcp` (hyphenated) form
 
 If you enabled Channels using the older `stackchan-mcp` server-name
 form, rename to the current `stackchanmcp` form (no hyphen) in all four
@@ -603,25 +635,95 @@ Without all four renames the host MCP client logs
 `Channel notifications skipped: server <name> not in --channels list
 for this session` and the notifications never reach the session.
 
-#### Customizing event message wording
+#### Channel: `jsonl` (out-of-process file integration)
 
-Each delivered event carries a short message rendered from a template.
+Use when an external host or your own pipeline needs to ingest events
+asynchronously by tailing a file. This is the simplest channel to wire
+into anything that is not Claude Code.
+
+Enable in `notify.yml`:
+
+```yaml
+jsonl:
+  enabled: true
+  path: ~/.claude/stackchan-events.jsonl
+```
+
+Each event is appended as one JSON line to the configured path. The
+file is created if it does not exist, and existing entries are
+preserved. Each line carries:
+
+- `event_type` — top-level event type (currently `"touch"`).
+- `subtype` — subtype within the event type (currently `"tap"` or
+  `"stroke"`).
+- `duration_ms` — firmware-reported duration of the event in
+  milliseconds.
+- `ts` — firmware uptime in milliseconds (monotonic).
+- `ts_unix` — wall-clock timestamp when the gateway recorded the
+  event.
+- `session_id` — gateway session identifier.
+- `action` — avatar action keyword for the event subtype (e.g.
+  `head_pat`, `head_stroke`). The built-in default templates always
+  populate this, and `messages:` overrides are also required to
+  specify `action`, so this field is present for every supported
+  subtype.
+
+The rendered wording (e.g. `head was tapped`) is what the `channels`
+channel delivers as the human-readable message; it is not stored in
+the JSONL record itself. A delivered tap-and-stroke pair looks like:
+
+```json
+{"event_type": "touch", "subtype": "tap", "duration_ms": 0, "ts": 123456, "ts_unix": 1717862400.0, "session_id": "abc-123", "action": "head_pat"}
+{"event_type": "touch", "subtype": "stroke", "duration_ms": 720, "ts": 124000, "ts_unix": 1717862400.7, "session_id": "abc-123", "action": "head_stroke"}
+```
+
+The top-level `event_type` and `subtype` correspond to the rows in
+"Supported event subtypes" below.
+
+#### Channel: `legacy_event` (pre-plugin backward compatibility)
+
+Use when the gateway is wired into the host via `~/.claude.json`
+`mcpServers` (the pre-plugin path) and you want events without
+switching the host over to the plugin form.
+
+Enable in `notify.yml`:
+
+```yaml
+legacy_event:
+  enabled: true
+```
+
+The gateway emits the self-defined `stackchan/event` MCP notification
+method. The notification params carry the same fields as the JSONL
+record above, except that `ts_unix` is not included (it is added only
+by the JSONL writer). The host is responsible for surfacing the
+notification — Claude Code's pre-plugin path historically displayed
+the rendered template inline; other hosts may handle the notification
+differently.
+
+#### Supported event subtypes
+
+The currently supported physical events are listed below. The structure
+is intentionally extensible: additional `touch` subtypes or new
+top-level types (e.g. `motion`, `voice`) can be appended in future
+releases without rewriting this section.
+
+| Type | Subtype | Default `action` | Default `template` |
+| --- | --- | --- | --- |
+| `touch` | `tap` | `head_pat` | `head was tapped` |
+| `touch` | `stroke` | `head_stroke` | `head was stroked for {duration_ms}ms` |
+
 The built-in defaults are phrased experientially — describing what the
 device felt rather than naming a mechanical event — so the consuming
-agent reads them as first-person narration:
+agent reads them as first-person narration. The `{duration_ms}`
+placeholder is substituted from the event payload; unknown
+placeholders are preserved verbatim.
 
-| Event | Default `action` | Default `template` |
-| --- | --- | --- |
-| `touch` / `tap` | `head_pat` | `head was tapped` |
-| `touch` / `stroke` | `head_stroke` | `head was stroked for {duration_ms}ms` |
+##### Overriding the wording
 
-The `{duration_ms}` placeholder is substituted from the event payload;
-unknown placeholders are preserved verbatim.
-
-To override the wording, add a `messages:` block to
-`~/.config/stackchan-mcp/notify.yml`. Only the event types you list are
-overridden; everything else keeps the defaults above. For example, to
-use a more casual phrasing:
+Add a `messages:` block to `~/.config/stackchan-mcp/notify.yml` to
+override the per-subtype `action` and `template`. Only the subtypes
+you list are overridden; everything else keeps the defaults above.
 
 ```yaml
 # ~/.config/stackchan-mcp/notify.yml
@@ -636,20 +738,9 @@ messages:
 ```
 
 Both `action` and `template` are required for each overridden subtype.
-The `action` value is forwarded in the event metadata, so keep it stable
-if a downstream consumer keys off it. See `notify.example.yml` for the
-full annotated reference.
-
-To restore the previous always-on event behavior:
-
-```yaml
-# ~/.config/stackchan-mcp/notify.yml
-legacy_event:
-  enabled: true
-jsonl:
-  enabled: true
-  path: ~/.claude/stackchan-events.jsonl
-```
+The `action` value is forwarded in the event metadata, so keep it
+stable if a downstream consumer keys off it. See `notify.example.yml`
+for the full annotated reference.
 
 ## About the avatar images
 
