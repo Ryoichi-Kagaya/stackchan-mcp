@@ -32,6 +32,46 @@ documented-only.
 
 ### Gateway
 
+- BREAKING: gateway event emission paths now default to all OFF instead of
+  legacy `stackchan/event` notifications plus JSONL logging. Added three
+  independent opt-in switches (`legacy_event`, `channels`, `jsonl`) via
+  `~/.config/stackchan-mcp/notify.yml`, plus an additive `action` field in
+  event payloads for the human-axis avatar action. To restore the previous
+  behavior, create:
+
+  ```yaml
+  legacy_event:
+    enabled: true
+  jsonl:
+    enabled: true
+    path: ~/.claude/stackchan-events.jsonl
+  ```
+
+  README now documents the host-side receiver setup required to consume
+  the Channels path: load this repository as a Claude Code plugin via
+  `claude --plugin-dir <repo-checkout>` so Claude Code subscribes to the
+  advertised `claude/channel` capability. Marketplace publication is
+  tracked as a follow-up. The JSONL fallback remains for hosts without
+  a Channels receiver.
+
+  The Channels notification instructions now use `source="stackchan-mcp"`
+  to match the plugin / MCP server identifier (Claude Code derives the
+  channel source from the loaded plugin name, not from notification
+  params). README EN/JP also document that pre-plugin `~/.claude.json`
+  wiring does not receive `<channel ...>` injections, that switching
+  paths requires releasing the existing ESP32 ownership lock, and that
+  `legacy_event` / `jsonl` remain compatible for users who keep the
+  pre-plugin wiring.
+
+  The README startup command for the Channels path now includes the
+  required `--channels server:stackchan-mcp` argument (loading the plugin via
+  `--plugin-dir` alone is insufficient: Claude Code only attaches a
+  channel source and injects `<channel source="stackchan-mcp" ...>`
+  blocks when the server is explicitly registered in the session's
+  channels list). When allowlist restrictions block development
+  servers, the documented fallback is
+  `--dangerously-load-development-channels server:stackchan-mcp`. (#266)
+
 - Added: `stackchan/event` experimental MCP capability and server-initiated
   notification bridge for firmware-originated touch events (`tap` /
   `stroke`) forwarded from additive `stackchan-event` WebSocket frames.

@@ -440,6 +440,79 @@ Face キャッシュにダウンロードされ、以降は再利用されます
 Vosk・whisper.cpp・他のクラウドサービス等を `listen` API を変えずに
 後から追加できます。
 
+### 6. オプション: イベント通知の有効化
+
+Stack-chan の物理イベント（touch tap / stroke）は、ホスト側の対応状況に
+合わせて複数の通知経路で届けられます。すべての経路はデフォルトで無効
+です。有効化するには `~/.config/stackchan-mcp/notify.yml` で opt-in
+してください。Channels 機構は実験的な MCP capability を使っており、
+今後変わる可能性があります。
+
+Channels 通知を有効にするには:
+
+1. Gateway 側 — `~/.config/stackchan-mcp/notify.yml` で Channels を
+   有効化します。
+
+   ```yaml
+   channels:
+     enabled: true
+   ```
+
+2. 受け口側 — ホストごとに開き方が異なります。
+
+   - **Claude Code**: 本リポジトリを CC plugin として読み込み、
+     かつ この plugin の MCP server を Channels source として登録する
+     ことで、gateway が宣言する `claude/channel` capability を
+     Claude Code が購読するようにします。
+
+     ```bash
+     claude --plugin-dir /path/to/stackchan-mcp --channels server:stackchan-mcp --agent <your-agent>
+     ```
+
+     1 セッション限定のローカル開発では `--plugin-dir` に本リポジトリの
+     作業コピーを指定してください。Claude Code は同梱の `.mcp.json`
+     経由で `${CLAUDE_PLUGIN_ROOT}/gateway` 配下の gateway を起動します。
+     `--channels server:stackchan-mcp` 引数を付けることで Claude Code がこの
+     server を channel source として attach し、session に
+     `<channel source="stackchan-mcp" ...>` blocks を inject します。
+     付けないと plugin は読み込まれますが、channels の notification は
+     受信側で silent に drop されます。allowlist 制限により開発用 server
+     が登録できない場合は、代わりに
+     `--dangerously-load-development-channels server:stackchan-mcp` を使って
+     ください。Marketplace 公開
+     (`--channels plugin:stackchan-mcp@<marketplace>`) は follow-up
+     として追跡し、manifest を marketplace へ提出したタイミングで
+     利用可能になります。
+
+     重要 — plugin 以前の起動経路では Channels が届きません: 以前
+     `~/.claude.json` の `mcpServers` 経由でこの gateway を起動して
+     いた場合、その旧経路では `<channel ...>` の inject は届きません。
+     Claude Code は plugin 経由で起動された MCP server のみに channel
+     source を付ける仕様です。plugin 経路に移行する前に、既存の
+     stackchan-mcp gateway プロセスを停止して ESP32 ownership lock
+     を解放してください。そうしないと plugin 経由で起動した gateway
+     が lock 取得に失敗します。`~/.claude.json` 経由のまま使いたい
+     場合は、`channels` ではなく `legacy_event` / `jsonl` を使って
+     ください。どちらも plugin loading なしで動作します。
+
+   - **`claude/channel` 互換の受け口を持つ他ホスト**: 当該ホストの
+     ドキュメントに従って受け口を開いてください。Claude Code 以外の
+     ホストとの互換性は当リポジトリでは未検証です。
+
+   - **Channels 受け口を持たないホスト**: JSONL フォールバックを
+     使ってください（下記参照）。
+
+以前の常時有効だったイベント動作に戻す設定:
+
+```yaml
+# ~/.config/stackchan-mcp/notify.yml
+legacy_event:
+  enabled: true
+jsonl:
+  enabled: true
+  path: ~/.claude/stackchan-events.jsonl
+```
+
 ## アバター画像について
 
 `firmware/main/boards/stackchan/avatar_images.cc` は **真っ黒 RGB565 のプレースホルダ** です。ビルドは通りますが、画面には何も表示されません。

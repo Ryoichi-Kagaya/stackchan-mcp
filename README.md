@@ -492,6 +492,77 @@ success. The STT framework is engine-agnostic — additional engines
 (Vosk, whisper.cpp, cloud providers) can be added without changing
 the `listen` API.
 
+### 6. Optional: enable event notifications
+
+Stack-chan physical events (touch tap / stroke) can be delivered through
+several notification paths, depending on host capabilities. All paths are
+disabled by default; opt in via `~/.config/stackchan-mcp/notify.yml`. The
+Channels mechanism uses an experimental MCP capability and may evolve.
+
+To enable Channels notifications:
+
+1. Gateway side — turn Channels on in `~/.config/stackchan-mcp/notify.yml`:
+
+   ```yaml
+   channels:
+     enabled: true
+   ```
+
+2. Receiver side — open a receiver on your host:
+
+   - **Claude Code**: load this repository as a CC plugin AND register
+     this plugin's MCP server as a Channels source so Claude Code
+     subscribes to the `claude/channel` capability advertised by this
+     gateway.
+
+     ```bash
+     claude --plugin-dir /path/to/stackchan-mcp --channels server:stackchan-mcp --agent <your-agent>
+     ```
+
+     For one-session local development, point `--plugin-dir` at your
+     working copy of this repository; Claude Code starts the gateway
+     under `${CLAUDE_PLUGIN_ROOT}/gateway` via the bundled `.mcp.json`.
+     The `--channels server:stackchan-mcp` argument is what makes Claude Code
+     attach the channel source to this server and inject
+     `<channel source="stackchan-mcp" ...>` blocks into the session;
+     without it the plugin loads but channels notifications are
+     silently dropped on the receiving side. If allowlist restrictions
+     block a development server from being added, use
+     `--dangerously-load-development-channels server:stackchan-mcp` instead.
+     Marketplace publication (`--channels plugin:stackchan-mcp@<marketplace>`)
+     is tracked as a follow-up and will land once the manifest is
+     submitted to a marketplace.
+
+     Important — pre-plugin wiring does not receive Channels: if you
+     previously wired this gateway via `~/.claude.json` `mcpServers`
+     (the pre-plugin path), that wiring does not receive `<channel ...>`
+     injections. Claude Code only attaches a channel source to
+     plugin-loaded MCP servers. Before switching to the plugin path,
+     stop any existing stackchan-mcp gateway process to release the
+     ESP32 ownership lock; the plugin-loaded gateway will otherwise
+     fail to acquire it. If you prefer to keep the `~/.claude.json`
+     wiring, use `legacy_event` and `jsonl` instead of `channels` —
+     both work without plugin loading.
+
+   - **Other hosts with a `claude/channel`-compatible receiver**: open
+     that receiver per the host's documentation. Compatibility with
+     hosts other than Claude Code has not been verified in this
+     repository.
+
+   - **Hosts without a Channels receiver**: use the JSONL fallback (see
+     below).
+
+To restore the previous always-on event behavior:
+
+```yaml
+# ~/.config/stackchan-mcp/notify.yml
+legacy_event:
+  enabled: true
+jsonl:
+  enabled: true
+  path: ~/.claude/stackchan-events.jsonl
+```
+
 ## About the avatar images
 
 `firmware/main/boards/stackchan/avatar_images.cc` is a **pure black RGB565 placeholder**. The firmware builds and runs, but the screen will display nothing.
