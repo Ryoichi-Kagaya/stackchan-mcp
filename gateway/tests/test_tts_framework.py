@@ -89,8 +89,8 @@ def test_get_registry_returns_singleton():
 
 
 def test_default_voice_constant():
-    """The default voice is the ElevenLabs engine."""
-    assert DEFAULT_VOICE == "elevenlabs"
+    """The default voice is the AivisSpeech/VOICEVOX engine."""
+    assert DEFAULT_VOICE == "voicevox"
 
 
 def test_tts_engine_defaults_to_no_emoji_style_support():
@@ -130,7 +130,7 @@ async def test_synthesize_and_send_unregistered_voice_raises():
         await synthesize_and_send({"text": "hello"}, registry=reg)
 
     msg = str(exc_info.value)
-    assert "elevenlabs" in msg
+    assert "voicevox" in msg
     assert "(none)" in msg
 
 
@@ -143,7 +143,7 @@ async def test_synthesize_and_send_requires_gateway():
     argument-shape surface without spinning up a Gateway.
     """
     reg = EngineRegistry()
-    reg.register(_FakeEngine(name="elevenlabs"))
+    reg.register(_FakeEngine(name="voicevox"))
 
     with pytest.raises(RuntimeError, match="gateway"):
         await synthesize_and_send({"text": "hello"}, registry=reg)

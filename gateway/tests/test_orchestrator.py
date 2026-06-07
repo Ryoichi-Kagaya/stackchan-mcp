@@ -18,7 +18,7 @@ from stackchan_mcp.tts.audio_utils import (
 class _PCMEngine(TTSEngine):
     """Engine that returns a fixed PCM buffer and records the call."""
 
-    def __init__(self, pcm: bytes, name: str = "elevenlabs") -> None:
+    def __init__(self, pcm: bytes, name: str = "voicevox") -> None:
         self.name = name
         self._pcm = pcm
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -149,7 +149,7 @@ async def test_pipeline_synthesises_encodes_and_pushes(fake_encode):
     reg.register(engine)
 
     result = await synthesize_and_send(
-        {"text": "こんにちは", "voice": "elevenlabs", "speaker_id": 7},
+        {"text": "こんにちは", "voice": "voicevox", "speaker_id": 7},
         gateway=gateway,
         registry=reg,
     )
@@ -159,7 +159,7 @@ async def test_pipeline_synthesises_encodes_and_pushes(fake_encode):
     assert result["sample_rate"] == DEVICE_SAMPLE_RATE
     assert result["frame_duration_ms"] == DEVICE_FRAME_DURATION_MS
     assert result["duration_ms"] == 2 * DEVICE_FRAME_DURATION_MS
-    assert result["engine"] == "elevenlabs"
+    assert result["engine"] == "voicevox"
     assert result["text"] == "こんにちは"
     assert result["speaker_id"] == 7
 
@@ -188,7 +188,7 @@ async def test_pipeline_passes_reference_audio_through(fake_encode):
     await synthesize_and_send(
         {
             "text": "hello",
-            "voice": "elevenlabs",
+            "voice": "voicevox",
             "reference_audio": "/tmp/sample.wav",
         },
         gateway=gateway,
@@ -596,7 +596,7 @@ async def test_pipeline_raises_when_engine_returns_no_pcm(fake_encode):
 class _RaisingEngine(TTSEngine):
     """Engine that fails synthesise with a configurable exception."""
 
-    def __init__(self, exc: Exception, name: str = "elevenlabs") -> None:
+    def __init__(self, exc: Exception, name: str = "voicevox") -> None:
         self.name = name
         self._exc = exc
 
@@ -628,7 +628,7 @@ async def test_engine_http_error_translated_to_runtime_error(fake_encode):
             gateway=gateway,
             registry=reg,
         )
-    assert "elevenlabs" in str(exc_info.value).lower()
+    assert "voicevox" in str(exc_info.value).lower()
     assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
 
 

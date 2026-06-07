@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_STT_ENGINE = "faster-whisper"
-DEFAULT_TTS_ENGINE = "elevenlabs"
+DEFAULT_TTS_ENGINE = "voicevox"
 DEFAULT_STT_LANGUAGE = "ja"
 
 # Max time to wait for listen.stop after listen.start.
@@ -131,9 +131,8 @@ class ConversationManager:
         except asyncio.TimeoutError:
             logger.warning(
                 "conversation: listen.stop not received within %.0fs; "
-                "processing %s accumulated frames",
+                "processing accumulated frames",
                 LISTEN_STOP_TIMEOUT_S,
-                "(unknown)",
             )
         self._listen_stop_event.clear()
 

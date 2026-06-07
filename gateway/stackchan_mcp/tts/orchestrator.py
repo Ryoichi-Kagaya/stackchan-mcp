@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 
 #: Default engine name when ``voice`` is omitted from the tool call.
-DEFAULT_VOICE = "elevenlabs"
+DEFAULT_VOICE = "voicevox"
 
 #: Environment variable that overrides the default engine selected when a
 #: ``say`` call omits ``voice``. The per-call ``voice`` argument still

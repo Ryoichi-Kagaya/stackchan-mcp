@@ -361,7 +361,7 @@ async def test_say_returns_error_json_when_voicevox_returns_5xx(monkeypatch):
     import stackchan_mcp.stdio_server as stdio_server
 
     class _HttpFailEngine(TTSEngine):
-        name = "elevenlabs"
+        name = "voicevox"
 
         async def synthesize(self, text, **opts):
             request = httpx.Request("POST", "http://test/audio_query")
@@ -400,7 +400,7 @@ async def test_say_returns_error_json_when_voicevox_returns_5xx(monkeypatch):
     )
     payload = json.loads(result.root.content[0].text)
     assert "error" in payload
-    assert "elevenlabs" in payload["error"].lower()
+    assert "voicevox" in payload["error"].lower()
 
 
 @pytest.mark.asyncio
@@ -415,7 +415,7 @@ async def test_say_returns_error_json_when_device_disconnects_mid_stream(
     pcm = b"\x01\x00" * 1440  # ~ 1.5 frames
 
     class _PCMEngine(TTSEngine):
-        name = "elevenlabs"
+        name = "voicevox"
 
         async def synthesize(self, text, **opts):
             return pcm
