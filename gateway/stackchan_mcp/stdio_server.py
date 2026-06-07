@@ -1724,7 +1724,6 @@ async def run_sse_server(host: str, port: int) -> None:
         host=host,
         port=port,
         log_level="warning",
-        install_signal_handlers=False,
     )
     server_instance = uvicorn.Server(config)
     logger.info("SSE MCP server starting on http://%s:%d/sse", host, port)
