@@ -493,6 +493,14 @@ async def _dispatch_mcp_tool(
             "self.robot.check_vm_en",
             {},
         ),
+        "gateway_config_get": (
+            "self.gateway_config.get",
+            {},
+        ),
+        "gateway_config_set": (
+            "self.gateway_config.set",
+            arguments,
+        ),
         "set_avatar": (
             "self.display.set_avatar",
             arguments,
@@ -764,6 +772,77 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                     "{io_expander_present, i2c_read_ok, raw, vm_en_high}."
                 ),
                 inputSchema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="gateway_config_get",
+                description=(
+                    "Read the device's NVS-backed WebSocket gateway "
+                    "connection settings. Returns url, fallback_url, "
+                    "token_set (never the token value), forced_keys, "
+                    "force_mode, discovery_enabled, and connected_url when "
+                    "the current WebSocket candidate is connected. Empty url "
+                    "enables mDNS discovery when firmware discovery support "
+                    "is compiled in and the primary URL is not forced; "
+                    "fallback_url is tried after discovery and is suitable "
+                    "for an out-of-LAN relay. forced_keys lists any of url, "
+                    "fallback_url, and token that a non-empty Kconfig default "
+                    "overrides at connect time; force_mode=true means at "
+                    "least one key is forced."
+                ),
+                inputSchema={"type": "object", "properties": {}},
+            ),
+            Tool(
+                name="gateway_config_set",
+                description=(
+                    "Update the device's NVS-backed WebSocket gateway "
+                    "connection settings. Optional string fields: url, "
+                    "fallback_url, token; at least one must be provided. "
+                    "Passing an empty string clears that key. Leave url "
+                    "empty to enable mDNS discovery on the next reconnect "
+                    "when firmware discovery support is compiled in and the "
+                    "primary URL is not forced; fallback_url is tried after "
+                    "discovery and is suitable for an out-of-LAN relay. The "
+                    "change is persisted but does not disconnect, reconnect, "
+                    "or reboot the device; it takes effect on the next "
+                    "reconnect. forced_keys lists any of url, fallback_url, "
+                    "and token that a non-empty Kconfig default overrides at "
+                    "connect time; force_mode=true means at least one key is "
+                    "forced, so updates to those keys are ignored until a "
+                    "non-force build is flashed."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": (
+                                "Primary NVS WebSocket URL. Empty string "
+                                "clears websocket.url, which enables mDNS "
+                                "discovery on the next reconnect when "
+                                "discovery is compiled in and the primary URL "
+                                "is not forced."
+                            ),
+                        },
+                        "fallback_url": {
+                            "type": "string",
+                            "description": (
+                                "Fallback NVS WebSocket URL. Tried after "
+                                "discovery and suitable for an out-of-LAN "
+                                "relay. Empty string clears "
+                                "websocket.fallback_url."
+                            ),
+                        },
+                        "token": {
+                            "type": "string",
+                            "description": (
+                                "Bearer token stored in NVS and sent to the "
+                                "gateway. Empty string clears the token. The "
+                                "token value is never returned by "
+                                "gateway_config_get."
+                            ),
+                        },
+                    },
+                },
             ),
             Tool(
                 name="set_avatar",
