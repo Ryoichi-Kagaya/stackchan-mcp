@@ -17,9 +17,10 @@ synthesising audio with no destination.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +32,7 @@ from .audio_utils import (
     resample_pcm16_linear,
 )
 from .base import EngineRegistry, get_registry
+from .emoji_expression import detect_emoji_face, strip_emoji_for_plain_tts
 
 if TYPE_CHECKING:
     from ..gateway import Gateway
@@ -58,6 +60,39 @@ DEFAULT_VOICE = "voicevox"
 TTS_ENGINE_ENV_VAR = "STACKCHAN_TTS_ENGINE"
 
 
+def _extract_set_avatar_payload(result: Any) -> dict[str, Any] | None:
+    payload = result
+    if isinstance(result, dict) and "content" in result:
+        content = result.get("content") or []
+        if isinstance(content, list) and content:
+            text = (
+                content[0].get("text")
+                if isinstance(content[0], dict)
+                else None
+            )
+            if isinstance(text, str):
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    return None
+
+    return payload if isinstance(payload, dict) else None
+
+
+def _set_avatar_payload_error(payload: dict[str, Any]) -> str:
+    raw_error = payload.get("error")
+    if isinstance(raw_error, dict):
+        message = raw_error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message
+    elif isinstance(raw_error, str) and raw_error.strip():
+        return raw_error
+    elif raw_error:
+        return str(raw_error)
+
+    return "set_avatar reported ok=false"
+
+
 def _resolve_default_engine() -> str:
     """Return the default engine name, honouring ``STACKCHAN_TTS_ENGINE``.
 
@@ -70,6 +105,45 @@ def _resolve_default_engine() -> str:
     if env_engine and env_engine.strip():
         return env_engine.strip()
     return DEFAULT_VOICE
+
+
+async def _try_set_avatar_face(
+    gateway: "Gateway",
+    face: str,
+) -> tuple[bool, str | None]:
+    try:
+        result, error = await gateway.esp32.call_tool(
+            "self.display.set_avatar", {"face": face}
+        )
+    except Exception as exc:
+        logger.warning("say(): set_avatar(%s) failed: %s", face, exc)
+        return False, str(exc)
+
+    if error:
+        message = error.get("message", error) if isinstance(error, dict) else error
+        logger.warning("say(): set_avatar(%s) failed: %s", face, message)
+        return False, str(message)
+
+    payload = _extract_set_avatar_payload(result)
+    if payload is not None and payload.get("ok") is False:
+        message = _set_avatar_payload_error(payload)
+        logger.warning(
+            "say(): set_avatar(%s) reported ok=false: %s", face, message
+        )
+        return False, message
+
+    return True, None
+
+
+async def _try_set_avatar_face_with_tts_lock(
+    gateway: "Gateway",
+    face: str,
+) -> tuple[bool, str | None]:
+    tts_lock = getattr(gateway.esp32, "tts_lock", None)
+    lock_ctx = tts_lock if tts_lock is not None else nullcontext()
+
+    async with lock_ctx:
+        return await _try_set_avatar_face(gateway, face)
 
 
 async def synthesize_and_send(
@@ -105,7 +179,8 @@ async def synthesize_and_send(
     Returns:
         Dict describing the synthesis: ``engine``, ``text``,
         ``speaker_id``, ``frame_count``, ``sample_rate``,
-        ``frame_duration_ms``, ``duration_ms``.
+        ``frame_duration_ms``, ``duration_ms``, plus emoji-expression
+        metadata such as ``face`` and ``text_stripped``.
 
     Raises:
         ValueError: if ``text`` is missing / empty / non-string.
@@ -122,6 +197,8 @@ async def synthesize_and_send(
     text = arguments.get("text", "")
     if not isinstance(text, str) or not text.strip():
         raise ValueError("'text' is required and must be a non-empty string")
+
+    face = detect_emoji_face(text)
 
     # An explicit, non-empty ``voice`` argument always wins. Otherwise the
     # default engine is resolved from STACKCHAN_TTS_ENGINE (falling back to
@@ -160,6 +237,50 @@ async def synthesize_and_send(
             "No ESP32 device connected; cannot deliver synthesised audio."
         )
 
+    speaker_id = arguments.get("speaker_id")
+    reference_audio = arguments.get("reference_audio")
+
+    tts_text = text
+    text_stripped = False
+    if not getattr(engine, "supports_emoji_style", False):
+        stripped_text = strip_emoji_for_plain_tts(text)
+        text_stripped = stripped_text != text
+        tts_text = stripped_text
+
+    face_dispatched = False
+    face_error: str | None = None
+
+    if not tts_text.strip():
+        if face is not None:
+            face_dispatched, face_error = await _try_set_avatar_face_with_tts_lock(
+                gateway,
+                face,
+            )
+        logger.info(
+            "say(): engine=%s speaker=%s speech skipped: text empty after "
+            "emoji strip",
+            voice,
+            speaker_id if speaker_id is not None else "default",
+        )
+        result = {
+            "engine": voice,
+            "text": text,
+            "speaker_id": speaker_id,
+            "frame_count": 0,
+            "sample_rate": DEVICE_SAMPLE_RATE,
+            "frame_duration_ms": DEVICE_FRAME_DURATION_MS,
+            "duration_ms": 0,
+            "face": face,
+            "face_dispatched": face_dispatched,
+            "face_error": face_error,
+            "text_stripped": text_stripped,
+            "spoke": False,
+            "reason": "text empty after emoji strip",
+        }
+        if text_stripped:
+            result["tts_text"] = tts_text
+        return result
+
     # WebSocket protocol version gate. The firmware decodes raw Opus
     # binary frames only on protocol v1; v2/v3 wrap each binary message
     # in a BinaryProtocol header that this gateway does not yet emit.
@@ -178,9 +299,6 @@ async def synthesize_and_send(
             "BinaryProtocol header wrapping is not yet supported."
         )
 
-    speaker_id = arguments.get("speaker_id")
-    reference_audio = arguments.get("reference_audio")
-
     # Engine failures (HTTP errors from VOICEVOX, malformed WAV from
     # the synthesiser, etc.) are translated to RuntimeError so the
     # MCP layer's narrow exception filter still produces clean error
@@ -188,7 +306,7 @@ async def synthesize_and_send(
     # arguments stay separable from operational degradation.
     try:
         pcm = await engine.synthesize(
-            text,
+            tts_text,
             speaker_id=speaker_id,
             reference_audio=reference_audio,
         )
@@ -207,6 +325,14 @@ async def synthesize_and_send(
             f"Engine '{voice}' produced no PCM data for the given text."
         )
 
+    async def dispatch_face_before_first_frame() -> None:
+        nonlocal face_dispatched, face_error
+        if face is not None:
+            face_dispatched, face_error = await _try_set_avatar_face(
+                gateway,
+                face,
+            )
+
     # Hand the PCM off to the shared encode-and-push path. Engines that
     # have already resampled to DEVICE_SAMPLE_RATE (the documented
     # TTSEngine contract) need no further conversion here.
@@ -214,6 +340,9 @@ async def synthesize_and_send(
         gateway,
         pcm,
         source_label=f"engine:{voice}",
+        before_first_frame=(
+            dispatch_face_before_first_frame if face is not None else None
+        ),
     )
 
     logger.info(
@@ -224,7 +353,7 @@ async def synthesize_and_send(
         result["duration_ms"],
     )
 
-    return {
+    response = {
         "engine": voice,
         "text": text,
         "speaker_id": speaker_id,
@@ -232,7 +361,15 @@ async def synthesize_and_send(
         "sample_rate": result["sample_rate"],
         "frame_duration_ms": result["frame_duration_ms"],
         "duration_ms": result["duration_ms"],
+        "face": face,
+        "face_dispatched": face_dispatched,
+        "face_error": face_error,
+        "text_stripped": text_stripped,
+        "spoke": True,
     }
+    if text_stripped:
+        response["tts_text"] = tts_text
+    return response
 
 
 async def send_pcm_audio(
@@ -241,6 +378,7 @@ async def send_pcm_audio(
     *,
     source_rate: int = DEVICE_SAMPLE_RATE,
     source_label: str = "external",
+    before_first_frame: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Encode mono PCM and push as Opus frames to the connected device.
 
@@ -264,6 +402,8 @@ async def send_pcm_audio(
         source_label: Label that appears in the orchestrator log line so
             external callers can be traced separately from engine-driven
             synthesis (e.g. ``"voice-tts"``, ``"sfx:notification"``).
+        before_first_frame: Internal hook for ``say()`` side effects that
+            must be serialized with speech delivery.
 
     Returns:
         Dict describing the push: ``source``, ``frame_count``,
@@ -376,6 +516,9 @@ async def send_pcm_audio(
         loop = asyncio.get_event_loop()
 
         try:
+            if before_first_frame is not None:
+                await before_first_frame()
+
             next_send_time = loop.time()
             for frame in opus_frames:
                 now = loop.time()
