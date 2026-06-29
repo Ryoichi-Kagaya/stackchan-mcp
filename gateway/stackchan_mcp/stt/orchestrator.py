@@ -38,7 +38,11 @@ from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..audio_stream import is_recording, start_recording, stop_recording
-from .audio_utils import DEVICE_FRAME_DURATION_MS, DEVICE_SAMPLE_RATE, decode_opus_frames
+from .audio_utils import (
+    DEVICE_FRAME_DURATION_MS,
+    DEVICE_SAMPLE_RATE,
+    decode_opus_frames,
+)
 from .base import EngineRegistry, get_registry
 
 if TYPE_CHECKING:
@@ -83,8 +87,7 @@ def _validate_motion_args(
     motion = arguments.get("motion", "none")
     if not isinstance(motion, str) or motion not in LISTEN_MOTIONS:
         raise ValueError(
-            "'motion' must be one of 'none', 'face-only', or 'look-up'; "
-            f"got {motion!r}"
+            f"'motion' must be one of 'none', 'face-only', or 'look-up'; got {motion!r}"
         )
 
     look_up_pitch_raw = arguments.get("look_up_pitch", 50.0)
@@ -99,8 +102,7 @@ def _validate_motion_args(
     look_up_pitch = float(look_up_pitch_raw)
     if look_up_pitch < MIN_LOOK_UP_PITCH or look_up_pitch > MAX_LOOK_UP_PITCH:
         raise ValueError(
-            "'look_up_pitch' must be between 5 and 85; got "
-            f"{look_up_pitch_raw!r}"
+            f"'look_up_pitch' must be between 5 and 85; got {look_up_pitch_raw!r}"
         )
 
     return motion, look_up_pitch
@@ -150,9 +152,7 @@ async def _shield_listen_motion_cleanup(
             continue
         except Exception as exc:
             cleanup_error = exc
-            logger.warning(
-                "best-effort listen motion cleanup failed: %s", exc
-            )
+            logger.warning("best-effort listen motion cleanup failed: %s", exc)
         break
 
     if outer_cancelled:
@@ -190,12 +190,16 @@ def _extract_head_angles(result: Any) -> tuple[float, float]:
                 payload = json.loads(text)
 
     if not isinstance(payload, dict):
-        raise RuntimeError("Device tool 'self.robot.get_head_angles' returned no angles")
+        raise RuntimeError(
+            "Device tool 'self.robot.get_head_angles' returned no angles"
+        )
 
     yaw = payload.get("yaw")
     pitch = payload.get("pitch")
     if not isinstance(yaw, int | float) or not isinstance(pitch, int | float):
-        raise RuntimeError("Device tool 'self.robot.get_head_angles' returned invalid angles")
+        raise RuntimeError(
+            "Device tool 'self.robot.get_head_angles' returned invalid angles"
+        )
     return float(yaw), float(pitch)
 
 
@@ -314,9 +318,7 @@ async def listen_and_transcribe(
     """
     duration_raw = arguments.get("duration_ms", 5000)
     if isinstance(duration_raw, bool) or not isinstance(duration_raw, int):
-        raise ValueError(
-            "'duration_ms' must be an integer; got " + repr(duration_raw)
-        )
+        raise ValueError("'duration_ms' must be an integer; got " + repr(duration_raw))
     if duration_raw < MIN_DURATION_MS or duration_raw > MAX_DURATION_MS:
         raise ValueError(
             f"'duration_ms' must be between {MIN_DURATION_MS} and "
@@ -350,9 +352,7 @@ async def listen_and_transcribe(
         )
 
     if not gateway.esp32.device_connected:
-        raise RuntimeError(
-            "No ESP32 device connected; cannot capture audio for STT."
-        )
+        raise RuntimeError("No ESP32 device connected; cannot capture audio for STT.")
 
     # Protocol version gate, identical in spirit to the TTS side
     # (PR #75). The gateway's inbound binary handler decodes raw Opus
@@ -451,9 +451,7 @@ async def listen_and_transcribe(
                 # before this ``finally`` block returns.
                 if listen_start_sent:
                     try:
-                        await asyncio.shield(
-                            gateway.esp32.send_listen_state("stop")
-                        )
+                        await asyncio.shield(gateway.esp32.send_listen_state("stop"))
                     except (ConnectionError, asyncio.CancelledError):
                         # Device dropped, or our awaiter was cancelled
                         # after shield released the send back to us. In
@@ -467,9 +465,7 @@ async def listen_and_transcribe(
                             "or wake-word"
                         )
                     except Exception as exc:
-                        logger.warning(
-                            "best-effort listen.stop failed: %s", exc
-                        )
+                        logger.warning("best-effort listen.stop failed: %s", exc)
                 frames = stop_recording()
 
             frame_count = len(frames)

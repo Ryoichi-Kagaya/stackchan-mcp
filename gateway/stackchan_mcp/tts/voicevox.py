@@ -175,8 +175,7 @@ class VoicevoxEngine(TTSEngine):
             pcm = resample_pcm16_linear(pcm, sample_rate, DEVICE_SAMPLE_RATE)
 
         logger.info(
-            "VOICEVOX synthesised %d bytes PCM (16 kHz mono) for "
-            "speaker=%d, text=%r",
+            "VOICEVOX synthesised %d bytes PCM (16 kHz mono) for speaker=%d, text=%r",
             len(pcm),
             speaker,
             text[:60],

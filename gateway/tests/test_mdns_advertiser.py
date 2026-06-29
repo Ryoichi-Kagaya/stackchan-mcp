@@ -255,8 +255,12 @@ async def test_advertiser_registers_service(monkeypatch: pytest.MonkeyPatch) -> 
         async def async_close(self) -> None:
             self.closed = True
 
-    monkeypatch.setattr(mdns, "_load_zeroconf_classes", lambda: (FakeAsyncZeroconf, FakeServiceInfo))
-    monkeypatch.setattr(mdns, "_enumerate_usable_ipv4_addresses", lambda: ["192.0.2.10", "10.0.0.5"])
+    monkeypatch.setattr(
+        mdns, "_load_zeroconf_classes", lambda: (FakeAsyncZeroconf, FakeServiceInfo)
+    )
+    monkeypatch.setattr(
+        mdns, "_enumerate_usable_ipv4_addresses", lambda: ["192.0.2.10", "10.0.0.5"]
+    )
 
     advertiser = MdnsAdvertiser()
     await advertiser.start(host="0.0.0.0", port=8765, path="/")
@@ -670,7 +674,9 @@ async def test_refresh_register_failure_cleans_up_and_loop_continues(
 
     advertiser = fast_advertiser()
     await advertiser.start(host="0.0.0.0", port=8765, path="/")
-    await wait_until(lambda: len(instances) == 3 and advertiser._zeroconf is instances[2])
+    await wait_until(
+        lambda: len(instances) == 3 and advertiser._zeroconf is instances[2]
+    )
 
     assert instances[0].unregistered == [instances[0].registered[0][0]]
     assert instances[0].closed is True
@@ -841,9 +847,7 @@ async def test_reconfigure_close_failure_then_revert_to_old_ip_still_recovers(
             raise RuntimeError("mock async_close failure on old-interface teardown")
         await original_close(self)
 
-    monkeypatch.setattr(
-        RecordingAsyncZeroconf, "async_close", flaky_async_close
-    )
+    monkeypatch.setattr(RecordingAsyncZeroconf, "async_close", flaky_async_close)
 
     advertiser = fast_advertiser()
     await advertiser.start(host="0.0.0.0", port=8765, path="/")

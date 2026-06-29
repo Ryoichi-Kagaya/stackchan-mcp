@@ -60,9 +60,7 @@ def fake_encode(monkeypatch):
     """
 
     def fake(pcm: bytes, **kwargs: Any):
-        samples_per_frame = (
-            DEVICE_SAMPLE_RATE * DEVICE_FRAME_DURATION_MS // 1000
-        )
+        samples_per_frame = DEVICE_SAMPLE_RATE * DEVICE_FRAME_DURATION_MS // 1000
         bytes_per_frame = samples_per_frame * 2
         n_full = len(pcm) // bytes_per_frame
         n_partial = 1 if len(pcm) % bytes_per_frame else 0
@@ -124,7 +122,8 @@ async def test_send_pcm_audio_default_source_label(fake_encode):
 
 @pytest.mark.asyncio
 async def test_send_pcm_audio_resamples_when_source_rate_differs(
-    fake_encode, monkeypatch,
+    fake_encode,
+    monkeypatch,
 ):
     """A source at e.g. 32 kHz is resampled to ``DEVICE_SAMPLE_RATE`` first.
 
@@ -153,7 +152,10 @@ async def test_send_pcm_audio_resamples_when_source_rate_differs(
     gateway = _FakeGateway(esp32)
 
     await send_pcm_audio(
-        gateway, pcm_32k, source_rate=32000, source_label="hi_rate",
+        gateway,
+        pcm_32k,
+        source_rate=32000,
+        source_label="hi_rate",
     )
 
     assert seen_resample == {"src": 32000, "dst": DEVICE_SAMPLE_RATE}
@@ -161,7 +163,8 @@ async def test_send_pcm_audio_resamples_when_source_rate_differs(
 
 @pytest.mark.asyncio
 async def test_send_pcm_audio_skips_resample_at_device_rate(
-    fake_encode, monkeypatch,
+    fake_encode,
+    monkeypatch,
 ):
     """When the source is already at the device rate, no resample happens."""
     import stackchan_mcp.tts.orchestrator as orchestrator
@@ -172,9 +175,7 @@ async def test_send_pcm_audio_skips_resample_at_device_rate(
             "source_rate == DEVICE_SAMPLE_RATE"
         )
 
-    monkeypatch.setattr(
-        orchestrator, "resample_pcm16_linear", explode_if_called
-    )
+    monkeypatch.setattr(orchestrator, "resample_pcm16_linear", explode_if_called)
 
     pcm = b"\x01\x00" * 960
     esp32 = _FakeESP32(connected=True)
@@ -283,22 +284,13 @@ async def test_send_pcm_audio_serialises_concurrent_pushes(fake_encode):
     )
 
     events = esp32.events
-    start_indices = [
-        i for i, e in enumerate(events) if e == ("tts_state", "start")
-    ]
-    stop_indices = [
-        i for i, e in enumerate(events) if e == ("tts_state", "stop")
-    ]
+    start_indices = [i for i, e in enumerate(events) if e == ("tts_state", "start")]
+    stop_indices = [i for i, e in enumerate(events) if e == ("tts_state", "stop")]
     assert len(start_indices) == 2
     assert len(stop_indices) == 2
     # Strictly sequential: the second caller's start must come after the
     # first's stop.
-    assert (
-        start_indices[0]
-        < stop_indices[0]
-        < start_indices[1]
-        < stop_indices[1]
-    )
+    assert start_indices[0] < stop_indices[0] < start_indices[1] < stop_indices[1]
 
 
 # ---------------------------------------------------------------------------
@@ -369,9 +361,7 @@ async def test_send_pcm_audio_translates_disconnect_before_start(fake_encode):
                 raise ConnectionError("device dropped during start")
 
         async def send_audio_frame(self, frame: bytes) -> None:
-            raise AssertionError(
-                "frame should not be attempted after start failure"
-            )
+            raise AssertionError("frame should not be attempted after start failure")
 
     esp32 = FailingESP32()
     gateway = _FakeGateway(esp32)  # type: ignore[arg-type]
@@ -383,7 +373,8 @@ async def test_send_pcm_audio_translates_disconnect_before_start(fake_encode):
 
 @pytest.mark.asyncio
 async def test_send_pcm_audio_translates_opus_encode_error(
-    fake_encode, monkeypatch,
+    fake_encode,
+    monkeypatch,
 ):
     """A failure inside ``encode_opus_frames`` becomes a clear RuntimeError."""
 
@@ -408,7 +399,8 @@ async def test_send_pcm_audio_translates_opus_encode_error(
 
 @pytest.mark.asyncio
 async def test_send_pcm_audio_paces_frames_at_device_rate(
-    fake_encode, monkeypatch,
+    fake_encode,
+    monkeypatch,
 ):
     """Each frame push is spaced by ``DEVICE_FRAME_DURATION_MS``.
 
@@ -422,9 +414,7 @@ async def test_send_pcm_audio_paces_frames_at_device_rate(
         sleeps.append(delay)
         await real_sleep(0)  # yield without actually waiting
 
-    monkeypatch.setattr(
-        "stackchan_mcp.tts.orchestrator.asyncio.sleep", fake_sleep
-    )
+    monkeypatch.setattr("stackchan_mcp.tts.orchestrator.asyncio.sleep", fake_sleep)
 
     pcm = b"\x01\x00" * 1440  # 2 frames after chunking
     esp32 = _FakeESP32(connected=True)

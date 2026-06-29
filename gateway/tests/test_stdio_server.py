@@ -366,9 +366,7 @@ async def test_say_returns_error_json_when_voicevox_returns_5xx(monkeypatch):
         async def synthesize(self, text, **opts):
             request = httpx.Request("POST", "http://test/audio_query")
             response = httpx.Response(503, request=request, text="overloaded")
-            raise httpx.HTTPStatusError(
-                "503", request=request, response=response
-            )
+            raise httpx.HTTPStatusError("503", request=request, response=response)
 
     reg = EngineRegistry()
     reg.register(_HttpFailEngine())
@@ -483,7 +481,11 @@ async def test_set_mouth_sequence_relays_steps_as_json_string(monkeypatch):
                     {
                         "type": "text",
                         "text": json.dumps(
-                            {"ok": True, "queued_steps": 2, "estimated_duration_ms": 160}
+                            {
+                                "ok": True,
+                                "queued_steps": 2,
+                                "estimated_duration_ms": 160,
+                            }
                         ),
                     }
                 ],
@@ -771,7 +773,10 @@ def _make_fake_gateway(monkeypatch):
                     {
                         "type": "text",
                         "text": json.dumps(
-                            {"yaw": arguments.get("yaw", 0), "pitch": arguments.get("pitch", 0)}
+                            {
+                                "yaw": arguments.get("yaw", 0),
+                                "pitch": arguments.get("pitch", 0),
+                            }
                         ),
                     }
                 ],

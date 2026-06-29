@@ -46,9 +46,7 @@ _PREFLIGHT_ENV_VARS = (
 )
 
 
-def _isolate_preflight_env(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def _isolate_preflight_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Make preflight tests independent of any host ``.env`` / inherited env.
 
     ``python-dotenv`` resolves ``.env`` via ``find_dotenv()``, which
@@ -262,8 +260,6 @@ async def test_run_sigterm_handler_cancels_and_stops_gateway(
     assert events == [("start", False), "stdio", "stop"]
 
 
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("jsonl_enabled", [False, True])
 async def test_run_rotates_event_log_only_when_jsonl_enabled(
@@ -322,6 +318,7 @@ async def test_run_rotates_event_log_only_when_jsonl_enabled(
         "stdio",
         "stop",
     ]
+
 
 def test_main_check_flag_remains_side_effect_free_with_no_mdns(
     monkeypatch: pytest.MonkeyPatch,
@@ -426,8 +423,7 @@ def test_format_port_status_in_use_no_holder() -> None:
 
 def test_format_port_status_in_use_with_holder() -> None:
     assert (
-        _format_port_status(False, "pid 12345, python")
-        == "IN USE (pid 12345, python)"
+        _format_port_status(False, "pid 12345, python") == "IN USE (pid 12345, python)"
     )
 
 
@@ -493,9 +489,7 @@ def test_check_port_resolves_via_getaddrinfo_for_localhost() -> None:
         assert info is None or info.startswith("bind error:") or "pid" in info
 
 
-@pytest.mark.skipif(
-    not socket.has_ipv6, reason="IPv6 stack not available on this host"
-)
+@pytest.mark.skipif(not socket.has_ipv6, reason="IPv6 stack not available on this host")
 def test_check_port_against_unbound_ipv6_loopback_reports_available() -> None:
     """``::1`` (IPv6 loopback) must be reachable through the new probe.
 
@@ -1130,17 +1124,12 @@ def test_ensure_libopus_findable_does_not_duplicate_existing_entries(
         "isdir",
         lambda p: p == "/opt/homebrew/lib",
     )
-    monkeypatch.setenv(
-        "DYLD_LIBRARY_PATH", "/opt/homebrew/lib:/some/other/lib"
-    )
+    monkeypatch.setenv("DYLD_LIBRARY_PATH", "/opt/homebrew/lib:/some/other/lib")
 
     cli._ensure_libopus_findable()
 
     # Unchanged because the only candidate was already present.
-    assert (
-        os.environ["DYLD_LIBRARY_PATH"]
-        == "/opt/homebrew/lib:/some/other/lib"
-    )
+    assert os.environ["DYLD_LIBRARY_PATH"] == "/opt/homebrew/lib:/some/other/lib"
 
 
 def test_ensure_libopus_findable_preserves_user_dyld_priority(

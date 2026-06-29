@@ -17,9 +17,7 @@ async def take_photo(esp32_call) -> dict[str, Any]:
     Returns:
         MCP result content.
     """
-    result, error = await esp32_call(
-        "self.camera.take_photo", {}
-    )
+    result, error = await esp32_call("self.camera.take_photo", {})
     if error:
         raise RuntimeError(f"take_photo failed: {error.get('message', str(error))}")
     return result

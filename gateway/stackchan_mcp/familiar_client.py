@@ -43,5 +43,9 @@ async def call_familiar(text: str, url: str) -> dict[str, Any]:
     except aiohttp.ClientError as exc:
         raise RuntimeError(f"familiar-ai request failed: {exc}") from exc
 
-    logger.debug("familiar_client: reply=%r emotion=%s", str(data.get("text", ""))[:80], data.get("emotion"))
+    logger.debug(
+        "familiar_client: reply=%r emotion=%s",
+        str(data.get("text", ""))[:80],
+        data.get("emotion"),
+    )
     return data

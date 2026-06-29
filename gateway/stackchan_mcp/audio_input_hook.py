@@ -141,7 +141,7 @@ def _packet_to_segments(packet: bytes) -> list[bytes]:
     pos = 0
     n = len(packet)
     while pos < n:
-        chunk = packet[pos:pos + 255]
+        chunk = packet[pos : pos + 255]
         segments.append(chunk)
         pos += 255
     if len(packet) % 255 == 0:
@@ -169,9 +169,7 @@ def _build_ogg_page(
     the API segment-oriented for correctness.
     """
     if len(segments) < 1 or len(segments) > 255:
-        raise ValueError(
-            f"Ogg page must have 1..255 segments, got {len(segments)}"
-        )
+        raise ValueError(f"Ogg page must have 1..255 segments, got {len(segments)}")
     segment_table = bytes(len(s) for s in segments)
     for seg in segments:
         if len(seg) > 255:
@@ -210,12 +208,12 @@ def _build_opus_head_packet(
     return struct.pack(
         "<8sBBHIhB",
         _OPUS_HEAD_MAGIC,
-        1,                    # version
+        1,  # version
         channels,
         pre_skip,
-        input_sample_rate,    # informational only; decoder always runs at 48 kHz
-        0,                    # output_gain (Q7.8 fixed-point dB), 0 = unchanged
-        0,                    # channel_mapping_family: 0 = mono/stereo
+        input_sample_rate,  # informational only; decoder always runs at 48 kHz
+        0,  # output_gain (Q7.8 fixed-point dB), 0 = unchanged
+        0,  # channel_mapping_family: 0 = mono/stereo
     )
 
 
@@ -277,11 +275,13 @@ def pack_opus_frames_to_ogg(
         granule_position=0,
         serial=serial,
         page_sequence=page_seq,
-        segments=[_build_opus_head_packet(
-            channels=channels,
-            pre_skip=pre_skip,
-            input_sample_rate=DEVICE_SAMPLE_RATE,
-        )],
+        segments=[
+            _build_opus_head_packet(
+                channels=channels,
+                pre_skip=pre_skip,
+                input_sample_rate=DEVICE_SAMPLE_RATE,
+            )
+        ],
     )
     page_seq += 1
 
@@ -384,7 +384,9 @@ async def push_audio_capture(
     except Exception as exc:
         logger.warning(
             "audio_input_hook: Ogg pack failed for %d frames (session=%s): %s",
-            len(frames), session_id, exc,
+            len(frames),
+            session_id,
+            exc,
         )
         return False
 
@@ -407,26 +409,31 @@ async def push_audio_capture(
                     logger.info(
                         "audio_input_hook: pushed %d frames (%d bytes) "
                         "session=%s status=%d",
-                        len(frames), len(ogg_payload), session_id,
+                        len(frames),
+                        len(ogg_payload),
+                        session_id,
                         response.status,
                     )
                     return True
                 body_snippet = (await response.text())[:200]
                 logger.warning(
-                    "audio_input_hook: POST returned status=%d session=%s "
-                    "body=%r",
-                    response.status, session_id, body_snippet,
+                    "audio_input_hook: POST returned status=%d session=%s body=%r",
+                    response.status,
+                    session_id,
+                    body_snippet,
                 )
                 return False
     except aiohttp.ClientError as exc:
         logger.warning(
             "audio_input_hook: POST failed (network error) session=%s: %s",
-            session_id, exc,
+            session_id,
+            exc,
         )
         return False
     except Exception as exc:
         logger.warning(
             "audio_input_hook: POST failed (unexpected) session=%s: %s",
-            session_id, exc,
+            session_id,
+            exc,
         )
         return False

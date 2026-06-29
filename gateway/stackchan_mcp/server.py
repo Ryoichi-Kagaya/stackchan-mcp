@@ -23,6 +23,7 @@ async def run_server(host: str = "0.0.0.0", port: int = 8765) -> None:
     # Keep running until interrupted
     try:
         import asyncio
+
         await asyncio.Future()  # Run forever
     finally:
         await manager.stop()

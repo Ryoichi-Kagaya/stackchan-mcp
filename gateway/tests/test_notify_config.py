@@ -171,7 +171,7 @@ def test_custom_messages_override_matching_default(monkeypatch, tmp_path):
         "  touch:\n"
         "    tap:\n"
         "      action: head_knock\n"
-        "      template: \"(head knock, {duration_ms}ms)\"\n",
+        '      template: "(head knock, {duration_ms}ms)"\n',
     )
 
     config = load_notify_config()

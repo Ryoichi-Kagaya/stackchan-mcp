@@ -41,10 +41,10 @@ STACKCHAN_EVENT_INSTRUCTIONS = (
     "reaction surface."
 )
 STACKCHAN_CHANNEL_INSTRUCTIONS = (
-    'Stack-chan physical events arrive as Channels notifications under '
+    "Stack-chan physical events arrive as Channels notifications under "
     '<channel source="plugin:stackchanmcp:stackchanmcp" action="..." '
     'subtype="..." duration_ms="...">. React naturally using existing '
-    'tools (set_avatar, say, set_mouth, set_leds, move_head).'
+    "tools (set_avatar, say, set_mouth, set_leds, move_head)."
 )
 STACKCHAN_JSONL_INSTRUCTIONS = (
     "Stack-chan physical events are persisted to the JSONL log; host "
@@ -164,7 +164,7 @@ class StackChanServer(Server):
             session,
             lifespan_context,
             raise_exceptions,
-    )
+        )
 
 
 def _latest_active_session() -> Any | None:
@@ -190,7 +190,9 @@ async def notify_stackchan_event(method: str, params: dict[str, Any]) -> None:
     for session in sessions:
         try:
             await session.send_notification(cast(Any, notification))
-        except Exception as exc:  # pragma: no cover - depends on client transport failure
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - depends on client transport failure
             logger.warning("Failed to emit %s notification: %s", method, exc)
 
 
@@ -376,9 +378,7 @@ async def _dispatch_mcp_tool(
             return [
                 TextContent(
                     type="text",
-                    text=json.dumps(
-                        {"ok": False, "error": "archive_path is required"}
-                    ),
+                    text=json.dumps({"ok": False, "error": "archive_path is required"}),
                 )
             ]
         if mode not in ("layered", "matrix"):
@@ -407,14 +407,21 @@ async def _dispatch_mcp_tool(
             await gateway.esp32.send_llm_emotion(emotion)
         except ConnectionError as exc:
             return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
-        return [TextContent(type="text", text=json.dumps({"ok": True, "emotion": emotion}))]
+        return [
+            TextContent(type="text", text=json.dumps({"ok": True, "emotion": emotion}))
+        ]
 
     if name == "alert":
         status = arguments.get("status", "")
         message_text = arguments.get("message", "")
         emotion = arguments.get("emotion", "neutral")
         if not status or not message_text:
-            return [TextContent(type="text", text=json.dumps({"error": "status and message are required"}))]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "status and message are required"}),
+                )
+            ]
         try:
             await gateway.esp32.send_alert(status, message_text, emotion)
         except ConnectionError as exc:
@@ -426,7 +433,12 @@ async def _dispatch_mcp_tool(
             await gateway.esp32.send_system_reboot()
         except ConnectionError as exc:
             return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
-        return [TextContent(type="text", text=json.dumps({"ok": True, "message": "Reboot command sent"}))]
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps({"ok": True, "message": "Reboot command sent"}),
+            )
+        ]
 
     if name == "move_head":
         yaw_val = arguments.get("yaw")
@@ -442,8 +454,7 @@ async def _dispatch_mcp_tool(
                     text=json.dumps(
                         {
                             "error": (
-                                "yaw must be an integer in -90..90 "
-                                f"(got {yaw_val!r})"
+                                f"yaw must be an integer in -90..90 (got {yaw_val!r})"
                             )
                         }
                     ),
@@ -1022,15 +1033,13 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         "yaw_enabled": {
                             "type": "boolean",
                             "description": (
-                                "True to enable yaw axis torque, false to "
-                                "disable."
+                                "True to enable yaw axis torque, false to disable."
                             ),
                         },
                         "pitch_enabled": {
                             "type": "boolean",
                             "description": (
-                                "True to enable pitch axis torque, false "
-                                "to disable."
+                                "True to enable pitch axis torque, false to disable."
                             ),
                         },
                     },
@@ -1054,8 +1063,7 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         "enabled": {
                             "type": "boolean",
                             "description": (
-                                "True to enable idle auto-release, false "
-                                "to disable it."
+                                "True to enable idle auto-release, false to disable it."
                             ),
                         },
                         "timeout_ms": {
@@ -1093,9 +1101,24 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "r": {"type": "integer", "description": "Red 0..168", "minimum": 0, "maximum": 168},
-                        "g": {"type": "integer", "description": "Green 0..168", "minimum": 0, "maximum": 168},
-                        "b": {"type": "integer", "description": "Blue 0..168", "minimum": 0, "maximum": 168},
+                        "r": {
+                            "type": "integer",
+                            "description": "Red 0..168",
+                            "minimum": 0,
+                            "maximum": 168,
+                        },
+                        "g": {
+                            "type": "integer",
+                            "description": "Green 0..168",
+                            "minimum": 0,
+                            "maximum": 168,
+                        },
+                        "b": {
+                            "type": "integer",
+                            "description": "Blue 0..168",
+                            "minimum": 0,
+                            "maximum": 168,
+                        },
                     },
                     "required": ["r", "g", "b"],
                 },
@@ -1490,7 +1513,7 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                     "(ENV III, ToF, gas sensor, PaHub, etc.). On-board ICs "
                     "on the internal bus are NOT included (this tool "
                     "operates on a physically separate bus). Returns "
-                    "{\"ok\": true, \"addresses\": [...]}."
+                    '{"ok": true, "addresses": [...]}.'
                 ),
                 inputSchema={
                     "type": "object",
@@ -1506,8 +1529,8 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                     "a preceding write. For typical 'write register "
                     "address, then read' patterns, use `i2c_write_read` "
                     "instead. Returns "
-                    "{\"ok\": true, \"bytes\": [...]} or "
-                    "{\"ok\": false, \"error\": \"ESP_ERR_TIMEOUT\"} on NACK."
+                    '{"ok": true, "bytes": [...]} or '
+                    '{"ok": false, "error": "ESP_ERR_TIMEOUT"} on NACK.'
                 ),
                 inputSchema={
                     "type": "object",
@@ -1593,8 +1616,7 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         "write_bytes": {
                             "type": "array",
                             "description": (
-                                "Bytes to write before reading "
-                                "(each 0..255)."
+                                "Bytes to write before reading (each 0..255)."
                             ),
                             "items": {
                                 "type": "integer",
@@ -1661,7 +1683,9 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
         ]
 
     @server.call_tool()
-    async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[TextContent]:
+    async def call_tool(
+        name: str, arguments: dict[str, Any] | None
+    ) -> list[TextContent]:
         """Handle a tool call by relaying to ESP32."""
         arguments = arguments or {}
         return await _dispatch_mcp_tool(name, arguments, get_gateway())
@@ -1704,7 +1728,9 @@ async def run_sse_server(host: str, port: int) -> None:
 
     async def handle_sse(request: Request) -> None:
         async with sse_transport.connect_sse(
-            request.scope, request.receive, request._send  # type: ignore[attr-defined]
+            request.scope,
+            request.receive,
+            request._send,  # type: ignore[attr-defined]
         ) as (read_stream, write_stream):
             await mcp_server.run(
                 read_stream,

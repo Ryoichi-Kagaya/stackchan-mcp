@@ -245,7 +245,8 @@ async def test_stream_default_source_label(fake_opuslib):
 
 @pytest.mark.asyncio
 async def test_stream_resamples_chunks_when_source_rate_differs(
-    fake_opuslib, monkeypatch,
+    fake_opuslib,
+    monkeypatch,
 ):
     """Source-rate PCM is buffered and resampled per source-rate frame.
 
@@ -282,7 +283,9 @@ async def test_stream_resamples_chunks_when_source_rate_differs(
     gateway = _FakeGateway(esp32)
 
     await send_pcm_stream(
-        gateway, _aiter([chunk_32k, chunk_32k]), source_rate=32000,
+        gateway,
+        _aiter([chunk_32k, chunk_32k]),
+        source_rate=32000,
     )
 
     # 32 kHz / DEVICE_FRAME_DURATION_MS frames live in 2 * SAMPLES_PER_FRAME
@@ -314,7 +317,9 @@ async def test_stream_handles_odd_byte_chunk_boundaries(fake_opuslib):
     gateway = _FakeGateway(esp32)
 
     await send_pcm_stream(
-        gateway, _aiter(odd_chunks), source_rate=32000,
+        gateway,
+        _aiter(odd_chunks),
+        source_rate=32000,
     )
     # Should reach normal completion (no exception raised); at least the
     # EOS-flush frame was pushed.
@@ -323,7 +328,8 @@ async def test_stream_handles_odd_byte_chunk_boundaries(fake_opuslib):
 
 @pytest.mark.asyncio
 async def test_stream_skips_resample_at_device_rate(
-    fake_opuslib, monkeypatch,
+    fake_opuslib,
+    monkeypatch,
 ):
     """No resample call when chunks are already at the device rate."""
     import stackchan_mcp.tts.orchestrator as orchestrator
@@ -362,9 +368,7 @@ async def test_stream_rejects_disconnected_device(fake_opuslib):
     gateway = _FakeGateway(esp32)
 
     with pytest.raises(RuntimeError, match="ESP32"):
-        await send_pcm_stream(
-            gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME])
-        )
+        await send_pcm_stream(gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME]))
 
     assert esp32.tts_states == []
 
@@ -379,9 +383,7 @@ async def test_stream_blocks_protocol_v2(fake_opuslib):
     gateway = _FakeGateway(esp32)
 
     with pytest.raises(RuntimeError, match="protocol v1"):
-        await send_pcm_stream(
-            gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME])
-        )
+        await send_pcm_stream(gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME]))
 
     assert esp32.tts_states == []
     assert esp32.frames == []
@@ -397,9 +399,7 @@ async def test_stream_blocks_protocol_v3(fake_opuslib):
     gateway = _FakeGateway(esp32)
 
     with pytest.raises(RuntimeError, match=r"v3"):
-        await send_pcm_stream(
-            gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME])
-        )
+        await send_pcm_stream(gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME]))
 
 
 @pytest.mark.asyncio
@@ -413,9 +413,7 @@ async def test_stream_reports_missing_opuslib(monkeypatch):
     gateway = _FakeGateway(esp32)
 
     with pytest.raises(RuntimeError, match=r"opuslib"):
-        await send_pcm_stream(
-            gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME])
-        )
+        await send_pcm_stream(gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME]))
 
 
 # ---------------------------------------------------------------------------
@@ -482,9 +480,7 @@ async def test_stream_translates_disconnect_before_start(fake_opuslib):
     gateway = _FakeGateway(esp32)  # type: ignore[arg-type]
 
     with pytest.raises(RuntimeError, match="TTS start"):
-        await send_pcm_stream(
-            gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME])
-        )
+        await send_pcm_stream(gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME]))
 
     assert esp32.tts_states == ["start"]
 
@@ -507,9 +503,7 @@ async def test_stream_translates_encoder_error(fake_opuslib, monkeypatch):
     gateway = _FakeGateway(esp32)
 
     with pytest.raises(RuntimeError, match="Opus encoding failed"):
-        await send_pcm_stream(
-            gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME])
-        )
+        await send_pcm_stream(gateway, _aiter([b"\x01\x00" * SAMPLES_PER_FRAME]))
 
 
 @pytest.mark.asyncio
@@ -526,8 +520,8 @@ async def test_stream_re_paces_after_producer_pause(fake_opuslib):
     in ``_push``.
     """
     frame_period_s = DEVICE_FRAME_DURATION_MS / 1000.0
-    pre_chunk = b"\x01\x00" * SAMPLES_PER_FRAME            # 1 frame
-    post_chunk = b"\x02\x00" * (SAMPLES_PER_FRAME * 5)     # 5 frames
+    pre_chunk = b"\x01\x00" * SAMPLES_PER_FRAME  # 1 frame
+    post_chunk = b"\x02\x00" * (SAMPLES_PER_FRAME * 5)  # 5 frames
 
     async def paused_producer() -> AsyncIterator[bytes]:
         yield pre_chunk

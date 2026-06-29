@@ -63,11 +63,7 @@ def _extract_set_avatar_payload(result: Any) -> dict[str, Any] | None:
     if isinstance(result, dict) and "content" in result:
         content = result.get("content") or []
         if isinstance(content, list) and content:
-            text = (
-                content[0].get("text")
-                if isinstance(content[0], dict)
-                else None
-            )
+            text = content[0].get("text") if isinstance(content[0], dict) else None
             if isinstance(text, str):
                 try:
                     payload = json.loads(text)
@@ -125,9 +121,7 @@ async def _try_set_avatar_face(
     payload = _extract_set_avatar_payload(result)
     if payload is not None and payload.get("ok") is False:
         message = _set_avatar_payload_error(payload)
-        logger.warning(
-            "say(): set_avatar(%s) reported ok=false: %s", face, message
-        )
+        logger.warning("say(): set_avatar(%s) reported ok=false: %s", face, message)
         return False, message
 
     return True, None
@@ -255,8 +249,7 @@ async def synthesize_and_send(
                 face,
             )
         logger.info(
-            "say(): engine=%s speaker=%s speech skipped: text empty after "
-            "emoji strip",
+            "say(): engine=%s speaker=%s speech skipped: text empty after emoji strip",
             voice,
             speaker_id if speaker_id is not None else "default",
         )
@@ -311,17 +304,13 @@ async def synthesize_and_send(
     except ValueError:
         raise
     except Exception as exc:
-        raise RuntimeError(
-            f"TTS engine '{voice}' failed: {exc}"
-        ) from exc
+        raise RuntimeError(f"TTS engine '{voice}' failed: {exc}") from exc
 
     if not pcm:
         # An engine returning no PCM is a bug, not a runtime condition;
         # surface it to the caller rather than silently sending zero
         # frames (which would look like the device "ignored" the call).
-        raise RuntimeError(
-            f"Engine '{voice}' produced no PCM data for the given text."
-        )
+        raise RuntimeError(f"Engine '{voice}' produced no PCM data for the given text.")
 
     async def dispatch_face_before_first_frame() -> None:
         nonlocal face_dispatched, face_error
@@ -444,9 +433,7 @@ async def send_pcm_audio(
         )
 
     if not gateway.esp32.device_connected:
-        raise RuntimeError(
-            "No ESP32 device connected; cannot deliver audio."
-        )
+        raise RuntimeError("No ESP32 device connected; cannot deliver audio.")
 
     # WebSocket protocol version gate. The firmware decodes raw Opus
     # binary frames only on protocol v1; v2/v3 wrap each binary message
@@ -625,9 +612,7 @@ async def send_pcm_stream(
         )
 
     if not gateway.esp32.device_connected:
-        raise RuntimeError(
-            "No ESP32 device connected; cannot deliver streamed audio."
-        )
+        raise RuntimeError("No ESP32 device connected; cannot deliver streamed audio.")
 
     # WebSocket protocol version gate (same reasoning as send_pcm_audio).
     connection = getattr(gateway.esp32, "connection", None)
@@ -653,9 +638,7 @@ async def send_pcm_stream(
             "'pip install stackchan-mcp[tts]' to enable streamed audio."
         ) from exc
 
-    samples_per_frame = (
-        DEVICE_SAMPLE_RATE * DEVICE_FRAME_DURATION_MS // 1000
-    )
+    samples_per_frame = DEVICE_SAMPLE_RATE * DEVICE_FRAME_DURATION_MS // 1000
     bytes_per_frame = samples_per_frame * 2  # 16-bit
     # Number of source-rate samples that produce exactly one device-rate
     # opus frame after resampling. When the input is already at the device
@@ -663,9 +646,7 @@ async def send_pcm_stream(
     # no-op; otherwise we drain whole source-rate frames into the
     # resampler, which avoids the rounding-error and odd-byte issues that
     # per-chunk resampling has when transport chunk sizes are arbitrary.
-    src_samples_per_frame = (
-        source_rate * DEVICE_FRAME_DURATION_MS // 1000
-    )
+    src_samples_per_frame = source_rate * DEVICE_FRAME_DURATION_MS // 1000
     if src_samples_per_frame <= 0:
         raise RuntimeError(
             f"source_rate {source_rate} is too low for "
@@ -771,13 +752,9 @@ async def send_pcm_stream(
                     else:
                         pcm_frame = src_frame
                     try:
-                        opus_frame = encoder.encode(
-                            pcm_frame, samples_per_frame
-                        )
+                        opus_frame = encoder.encode(pcm_frame, samples_per_frame)
                     except Exception as exc:
-                        raise RuntimeError(
-                            f"Opus encoding failed: {exc}"
-                        ) from exc
+                        raise RuntimeError(f"Opus encoding failed: {exc}") from exc
 
                     if not await _push(opus_frame):
                         break  # device disconnected mid-stream
@@ -810,19 +787,13 @@ async def send_pcm_stream(
                         if len(tail) > bytes_per_frame:
                             tail = tail[:bytes_per_frame]
                         elif len(tail) < bytes_per_frame:
-                            tail = tail + b"\x00" * (
-                                bytes_per_frame - len(tail)
-                            )
+                            tail = tail + b"\x00" * (bytes_per_frame - len(tail))
                     else:
                         tail = tail_src
                     try:
-                        opus_frame = encoder.encode(
-                            tail, samples_per_frame
-                        )
+                        opus_frame = encoder.encode(tail, samples_per_frame)
                     except Exception as exc:
-                        raise RuntimeError(
-                            f"Opus encoding failed: {exc}"
-                        ) from exc
+                        raise RuntimeError(f"Opus encoding failed: {exc}") from exc
                     await _push(opus_frame)
         finally:
             try:

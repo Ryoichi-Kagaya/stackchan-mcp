@@ -489,10 +489,7 @@ async def test_listen_motion_look_up_re_cancel_during_cleanup_chains_rollback_fa
     async def slow_failing_rollback(name, arguments):
         # Slow the rollback so the re-cancel lands while the
         # cleanup_task is still in flight.
-        if (
-            name == "self.robot.set_head_angles"
-            and arguments.get("pitch") == 24.0
-        ):
+        if name == "self.robot.set_head_angles" and arguments.get("pitch") == 24.0:
             await asyncio.sleep(0.03)
             esp32.tool_calls.append((name, dict(arguments)))
             return {}, {"message": "simulated rollback pitch failure"}
@@ -574,17 +571,11 @@ async def test_listen_motion_look_up_double_cleanup_failure_preserves_both_error
 
     async def double_cleanup_failure(name, arguments):
         # Rollback set_head_angles(saved pitch=24.0) fails.
-        if (
-            name == "self.robot.set_head_angles"
-            and arguments.get("pitch") == 24.0
-        ):
+        if name == "self.robot.set_head_angles" and arguments.get("pitch") == 24.0:
             esp32.tool_calls.append((name, dict(arguments)))
             return {}, {"message": "rollback pitch failure"}
         # Cleanup-path set_avatar('idle') also fails.
-        if (
-            name == "self.display.set_avatar"
-            and arguments.get("face") == "idle"
-        ):
+        if name == "self.display.set_avatar" and arguments.get("face") == "idle":
             esp32.tool_calls.append((name, dict(arguments)))
             return {}, {"message": "rollback avatar failure"}
         return await original_call_tool(name, arguments)
@@ -612,8 +603,7 @@ async def test_listen_motion_look_up_double_cleanup_failure_preserves_both_error
     chained = primary.__cause__
     assert chained is not None, "cleanup chain must reach the caller"
     assert "set_avatar" in str(chained), (
-        f"primary cleanup error should be the avatar restore failure; "
-        f"got {chained!r}"
+        f"primary cleanup error should be the avatar restore failure; got {chained!r}"
     )
 
     # The pitch failure is preserved on the avatar failure's
@@ -621,8 +611,7 @@ async def test_listen_motion_look_up_double_cleanup_failure_preserves_both_error
     # so the caller can navigate to it programmatically.
     pitch_failure = chained.__context__
     assert pitch_failure is not None, (
-        "pitch rollback failure must remain inspectable via "
-        "__cause__.__context__"
+        "pitch rollback failure must remain inspectable via __cause__.__context__"
     )
     assert "set_head_angles" in str(pitch_failure), (
         f"pitch failure should appear on __context__; got {pitch_failure!r}"
@@ -671,10 +660,7 @@ async def test_listen_motion_look_up_engine_failure_with_rollback_failure_chains
         # forward set_avatar uses face='thinking'. Both stay on the
         # original fake path. Only the rollback set_head_angles
         # (saved pitch=24.0) fails here.
-        if (
-            name == "self.robot.set_head_angles"
-            and arguments.get("pitch") == 24.0
-        ):
+        if name == "self.robot.set_head_angles" and arguments.get("pitch") == 24.0:
             esp32.tool_calls.append((name, dict(arguments)))
             return {}, {"message": "simulated rollback pitch failure"}
         return await original_call_tool(name, arguments)
@@ -750,17 +736,11 @@ async def test_listen_motion_look_up_nested_partial_failure_surfaces_rollback_er
 
     async def double_failure(name, arguments):
         # Forward set_avatar('thinking') fails — record attempt.
-        if (
-            name == "self.display.set_avatar"
-            and arguments.get("face") == "thinking"
-        ):
+        if name == "self.display.set_avatar" and arguments.get("face") == "thinking":
             esp32.tool_calls.append((name, dict(arguments)))
             return {}, {"message": "simulated forward avatar failure"}
         # Rollback set_head_angles(saved pitch=24.0) fails — record attempt.
-        if (
-            name == "self.robot.set_head_angles"
-            and arguments.get("pitch") == 24.0
-        ):
+        if name == "self.robot.set_head_angles" and arguments.get("pitch") == 24.0:
             esp32.tool_calls.append((name, dict(arguments)))
             return {}, {"message": "simulated rollback pitch failure"}
         # Forward set_head_angles(50.0), forward get_head_angles, and
@@ -841,10 +821,7 @@ async def test_listen_motion_look_up_partial_rollback_still_restores_avatar(
         # pitch=50.0 and stays on the original fake path. Record the
         # failing call into tool_calls explicitly so the assertion
         # below can verify the rollback was actually attempted.
-        if (
-            name == "self.robot.set_head_angles"
-            and arguments.get("pitch") == 24.0
-        ):
+        if name == "self.robot.set_head_angles" and arguments.get("pitch") == 24.0:
             esp32.tool_calls.append((name, dict(arguments)))
             return {}, {"message": "simulated rollback failure"}
         result_pair = await original_call_tool(name, arguments)
@@ -997,7 +974,9 @@ async def test_pipeline_declines_when_device_driven_capture_active():
 
 
 @pytest.mark.asyncio
-async def test_pipeline_translates_disconnect_before_listen_start(fake_decode, monkeypatch):
+async def test_pipeline_translates_disconnect_before_listen_start(
+    fake_decode, monkeypatch
+):
     """ConnectionError on listen.start surfaces as a clear RuntimeError."""
 
     real_sleep = asyncio.sleep
@@ -1033,7 +1012,9 @@ async def test_pipeline_translates_disconnect_before_listen_start(fake_decode, m
 
 
 @pytest.mark.asyncio
-async def test_pipeline_translates_engine_error_to_runtime_error(fake_decode, monkeypatch):
+async def test_pipeline_translates_engine_error_to_runtime_error(
+    fake_decode, monkeypatch
+):
     """Engine failure surfaces as RuntimeError with the cause preserved."""
 
     real_sleep = asyncio.sleep
@@ -1164,12 +1145,8 @@ async def test_pipeline_serialises_concurrent_listen_calls(fake_decode, monkeypa
     reg.register(engine)
 
     await asyncio.gather(
-        listen_and_transcribe(
-            {"duration_ms": 200}, gateway=gateway, registry=reg
-        ),
-        listen_and_transcribe(
-            {"duration_ms": 200}, gateway=gateway, registry=reg
-        ),
+        listen_and_transcribe({"duration_ms": 200}, gateway=gateway, registry=reg),
+        listen_and_transcribe({"duration_ms": 200}, gateway=gateway, registry=reg),
     )
 
     state_seq = [s for s, _ in esp32.listen_states]
@@ -1178,10 +1155,5 @@ async def test_pipeline_serialises_concurrent_listen_calls(fake_decode, monkeypa
     assert len(start_indices) == 2
     assert len(stop_indices) == 2
     # The lock guarantees: start_0 < stop_0 < start_1 < stop_1.
-    assert (
-        start_indices[0]
-        < stop_indices[0]
-        < start_indices[1]
-        < stop_indices[1]
-    )
+    assert start_indices[0] < stop_indices[0] < start_indices[1] < stop_indices[1]
     assert not is_recording()

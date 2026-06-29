@@ -132,9 +132,7 @@ def test_log_event_defaults_ts_unix_to_now(monkeypatch, tmp_path):
 # --- log_event error swallowing --------------------------------------------
 
 
-def test_log_event_swallows_oserror_and_logs_warning(
-    monkeypatch, tmp_path, caplog
-):
+def test_log_event_swallows_oserror_and_logs_warning(monkeypatch, tmp_path, caplog):
     path = tmp_path / "events.jsonl"
     monkeypatch.setenv(PATH_ENV_VAR, str(path))
 
@@ -351,9 +349,7 @@ def test_rotate_replaces_via_os_replace_atomically(monkeypatch, tmp_path):
     assert len(surviving) == 1
 
 
-def test_rotate_swallows_read_error_and_logs_warning(
-    monkeypatch, tmp_path, caplog
-):
+def test_rotate_swallows_read_error_and_logs_warning(monkeypatch, tmp_path, caplog):
     path = tmp_path / "events.jsonl"
     monkeypatch.setenv(PATH_ENV_VAR, str(path))
     path.write_text("{}\n", encoding="utf-8")

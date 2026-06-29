@@ -208,18 +208,14 @@ def _enumerate_usable_ipv4_addresses() -> list[str]:
     # up with its own subnet's network address as its host IP) would be
     # advertised and then crash the zeroconf socket with ``EADDRNOTAVAIL``.
     prefix_by_address = {
-        address: prefix
-        for address, prefix in ifaddr_entries
-        if prefix is not None
+        address: prefix for address, prefix in ifaddr_entries if prefix is not None
     }
     enriched_socket_entries = [
         (address, prefix_by_address.get(address, prefix))
         for address, prefix in socket_entries
     ]
 
-    return _select_advertised_addresses(
-        [*ifaddr_entries, *enriched_socket_entries]
-    )
+    return _select_advertised_addresses([*ifaddr_entries, *enriched_socket_entries])
 
 
 def _resolve_concrete_host_ipv4_addresses(host: str) -> list[str]:
@@ -323,7 +319,9 @@ class MdnsAdvertiser:
                 await self._close_zeroconf_locked()
             self._start_args = {"host": host, "port": port, "path": path}
             try:
-                advertisement = await self._start_locked(host=host, port=port, path=path)
+                advertisement = await self._start_locked(
+                    host=host, port=port, path=path
+                )
             except Exception:
                 self._start_args = None
                 self._last_advertised_addresses = None

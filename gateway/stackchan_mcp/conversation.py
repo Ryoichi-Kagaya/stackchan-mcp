@@ -62,7 +62,9 @@ class ConversationManager:
     device disconnects.
     """
 
-    def __init__(self, esp32: "ESP32Manager", familiar_url: str, session_id: str) -> None:
+    def __init__(
+        self, esp32: "ESP32Manager", familiar_url: str, session_id: str
+    ) -> None:
         self._esp32 = esp32
         self._familiar_url = familiar_url
         self._session_id = session_id
@@ -182,7 +184,9 @@ class ConversationManager:
         if not reply.strip():
             logger.info("conversation: familiar-ai returned empty reply — skipping TTS")
             return
-        logger.info("conversation: familiar-ai reply=%r emotion=%s", reply[:80], emotion)
+        logger.info(
+            "conversation: familiar-ai reply=%r emotion=%s", reply[:80], emotion
+        )
 
         # --- TTS ---
         try:

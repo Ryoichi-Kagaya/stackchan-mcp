@@ -56,9 +56,7 @@ class CommandQueue:
         self._capacity = capacity if capacity is not None else _capacity_from_env()
         if self._capacity < 1:
             raise ValueError("command queue capacity must be at least 1")
-        self._queue: asyncio.Queue[QueueItem] = asyncio.Queue(
-            maxsize=self._capacity
-        )
+        self._queue: asyncio.Queue[QueueItem] = asyncio.Queue(maxsize=self._capacity)
 
     @property
     def capacity(self) -> int:
@@ -124,9 +122,7 @@ def _capacity_from_env() -> int:
     try:
         capacity = int(raw_capacity)
     except ValueError as exc:
-        raise ValueError(
-            f"{COMMAND_QUEUE_SIZE_ENV} must be an integer"
-        ) from exc
+        raise ValueError(f"{COMMAND_QUEUE_SIZE_ENV} must be an integer") from exc
     if capacity < 1:
         raise ValueError(f"{COMMAND_QUEUE_SIZE_ENV} must be at least 1")
     return capacity

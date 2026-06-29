@@ -173,9 +173,7 @@ async def test_synthesize_and_send_lists_available_engines_in_error():
     reg.register(_FakeEngine(name="beta"))
 
     with pytest.raises(NotImplementedError) as exc_info:
-        await synthesize_and_send(
-            {"text": "hello", "voice": "voicevox"}, registry=reg
-        )
+        await synthesize_and_send({"text": "hello", "voice": "voicevox"}, registry=reg)
 
     msg = str(exc_info.value)
     assert "alpha" in msg
@@ -229,9 +227,7 @@ async def test_explicit_voice_overrides_env_default(monkeypatch):
     reg = EngineRegistry()
 
     with pytest.raises(NotImplementedError) as exc_info:
-        await synthesize_and_send(
-            {"text": "hello", "voice": "voicevox"}, registry=reg
-        )
+        await synthesize_and_send({"text": "hello", "voice": "voicevox"}, registry=reg)
 
     msg = str(exc_info.value)
     assert "voicevox" in msg

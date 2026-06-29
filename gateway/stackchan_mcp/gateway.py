@@ -175,7 +175,9 @@ class Gateway:
             self._mdns_advertiser = MdnsAdvertiser()
             try:
                 await self._mdns_advertiser.start(host=host, port=ws_port, path="/")
-            except Exception as exc:  # pragma: no cover - exact zeroconf errors vary by host
+            except (
+                Exception
+            ) as exc:  # pragma: no cover - exact zeroconf errors vary by host
                 logger.warning("mDNS advertisement failed: %s", exc)
                 self._mdns_advertiser = None
         else:
@@ -184,7 +186,11 @@ class Gateway:
         self._running = True
         logger.info(
             "Gateway started: WS on %s:%d, capture on %s:%d, vision_url=%s",
-            host, ws_port, host, capture_port, self.vision_url,
+            host,
+            ws_port,
+            host,
+            capture_port,
+            self.vision_url,
         )
 
     async def stop(self) -> None:
@@ -193,7 +199,9 @@ class Gateway:
         if self._mdns_advertiser:
             try:
                 await self._mdns_advertiser.stop()
-            except Exception as exc:  # pragma: no cover - exact zeroconf errors vary by host
+            except (
+                Exception
+            ) as exc:  # pragma: no cover - exact zeroconf errors vary by host
                 logger.warning("mDNS advertisement shutdown failed: %s", exc)
             finally:
                 self._mdns_advertiser = None
@@ -242,8 +250,8 @@ class Gateway:
 
         kimg_bytes = 160 * 120 * 2  # 38_400 — matches AvatarSet::kImageBytes
         expected = {
-            "layered": 14 * kimg_bytes,   # 537_600
-            "matrix":  90 * kimg_bytes,   # 3_456_000
+            "layered": 14 * kimg_bytes,  # 537_600
+            "matrix": 90 * kimg_bytes,  # 3_456_000
         }.get(mode)
         if expected is None:
             return {"ok": False, "error": f"unknown_mode: {mode}"}

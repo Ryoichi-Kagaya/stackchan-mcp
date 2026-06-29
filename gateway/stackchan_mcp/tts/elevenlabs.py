@@ -69,9 +69,7 @@ class ElevenLabsEngine(TTSEngine):
             or os.getenv("ELEVENLABS_VOICE_ID", "")
         )
         self._model_id = (
-            model_id
-            or os.getenv("STACKCHAN_ELEVENLABS_MODEL_ID")
-            or DEFAULT_MODEL_ID
+            model_id or os.getenv("STACKCHAN_ELEVENLABS_MODEL_ID") or DEFAULT_MODEL_ID
         )
         self._timeout_seconds = timeout_seconds
         self._transport = transport
@@ -93,9 +91,7 @@ class ElevenLabsEngine(TTSEngine):
             ) from exc
 
         if not isinstance(text, str) or not text.strip():
-            raise ValueError(
-                "ElevenLabs synthesize: 'text' must be a non-empty string"
-            )
+            raise ValueError("ElevenLabs synthesize: 'text' must be a non-empty string")
         if not self._api_key:
             raise RuntimeError(
                 "ElevenLabs API key not configured. "
@@ -126,8 +122,7 @@ class ElevenLabsEngine(TTSEngine):
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code != 200:
                 raise RuntimeError(
-                    f"ElevenLabs API returned {resp.status_code}: "
-                    f"{resp.text[:120]}"
+                    f"ElevenLabs API returned {resp.status_code}: {resp.text[:120]}"
                 )
             pcm = resp.content
 
@@ -139,8 +134,7 @@ class ElevenLabsEngine(TTSEngine):
             )
 
         logger.info(
-            "ElevenLabs synthesised %d bytes PCM (16 kHz) "
-            "voice=%s model=%s text=%r",
+            "ElevenLabs synthesised %d bytes PCM (16 kHz) voice=%s model=%s text=%r",
             len(pcm),
             self._voice_id,
             self._model_id,

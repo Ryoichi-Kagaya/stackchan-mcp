@@ -133,12 +133,11 @@ async def handle_capture(request: web.Request) -> web.Response:
     if content_length is not None and content_length > CAPTURE_MAX_BYTES:
         logger.warning(
             "Capture upload rejected: Content-Length %d exceeds %d",
-            content_length, CAPTURE_MAX_BYTES,
+            content_length,
+            CAPTURE_MAX_BYTES,
         )
         return web.Response(
-            text=json.dumps(
-                {"error": f"Upload exceeds {CAPTURE_MAX_BYTES} bytes"}
-            ),
+            text=json.dumps({"error": f"Upload exceeds {CAPTURE_MAX_BYTES} bytes"}),
             status=413,
             content_type="application/json",
         )
@@ -174,7 +173,8 @@ async def handle_capture(request: web.Request) -> web.Response:
                             pass
                         logger.warning(
                             "Capture upload truncated at %d bytes (cap %d)",
-                            bytes_written, CAPTURE_MAX_BYTES,
+                            bytes_written,
+                            CAPTURE_MAX_BYTES,
                         )
                         return web.Response(
                             text=json.dumps(
@@ -189,11 +189,13 @@ async def handle_capture(request: web.Request) -> web.Response:
         file_size = os.path.getsize(image_path)
         logger.info("Captured photo: %s (%d bytes)", image_path, file_size)
         _latest_capture_path = image_path
-        result = json.dumps({
-            "image_path": image_path,
-            "size_bytes": file_size,
-            "question": question,
-        })
+        result = json.dumps(
+            {
+                "image_path": image_path,
+                "size_bytes": file_size,
+                "question": question,
+            }
+        )
         return web.Response(text=result, content_type="application/json")
 
     return web.Response(
@@ -237,7 +239,8 @@ async def stage_avatar_set(
         # Best-effort GC of stale entries before inserting.
         now = time.time()
         expired = [
-            k for k, v in sets.items()
+            k
+            for k, v in sets.items()
             if now - v.created_at > AVATAR_SET_STAGING_TTL_SEC
         ]
         for k in expired:
@@ -246,7 +249,10 @@ async def stage_avatar_set(
 
     logger.info(
         "Staged avatar set: short_id=%s mode=%s bytes=%d sha256=%s",
-        short_id, mode, len(payload), sha256,
+        short_id,
+        mode,
+        len(payload),
+        sha256,
     )
     return short_id, token, sha256
 
@@ -275,9 +281,7 @@ async def handle_avatar_set_fetch(request: web.Request) -> web.Response:
 
         auth = request.headers.get("Authorization", "")
         if auth != f"Bearer {staging.token}":
-            logger.warning(
-                "Avatar set fetch auth rejected for short_id=%s", short_id
-            )
+            logger.warning("Avatar set fetch auth rejected for short_id=%s", short_id)
             return web.Response(status=401, text="unauthorized")
 
         # Auth confirmed: consume the one-time entry now.
@@ -285,7 +289,9 @@ async def handle_avatar_set_fetch(request: web.Request) -> web.Response:
 
     logger.info(
         "Serving avatar set: short_id=%s mode=%s bytes=%d",
-        short_id, staging.mode, len(staging.payload),
+        short_id,
+        staging.mode,
+        len(staging.payload),
     )
     return web.Response(
         body=staging.payload,

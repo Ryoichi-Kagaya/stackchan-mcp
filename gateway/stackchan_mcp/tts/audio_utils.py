@@ -74,10 +74,7 @@ def wav_to_pcm16_mono(wav_bytes: bytes) -> tuple[int, bytes]:
         samples.frombytes(raw)
         mono = array.array(
             "h",
-            [
-                (samples[i] + samples[i + 1]) // 2
-                for i in range(0, len(samples), 2)
-            ],
+            [(samples[i] + samples[i + 1]) // 2 for i in range(0, len(samples), 2)],
         )
         return sample_rate, mono.tobytes()
 

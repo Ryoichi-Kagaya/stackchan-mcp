@@ -16,7 +16,13 @@ from urllib.parse import urlparse
 import jsonschema
 from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from mcp.types import CallToolRequest, CallToolResult, ErrorData, ServerResult, TextContent
+from mcp.types import (
+    CallToolRequest,
+    CallToolResult,
+    ErrorData,
+    ServerResult,
+    TextContent,
+)
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -201,7 +207,9 @@ def _install_queue_tool_handler(
         if isinstance(request, Request):
             client_session_id = request.headers.get(MCP_SESSION_ID_HEADER)
 
-        response_future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        response_future: asyncio.Future[Any] = (
+            asyncio.get_running_loop().create_future()
+        )
         item = QueueItem(
             correlation_id=str(uuid.uuid4()),
             client_session_id=client_session_id,
@@ -356,7 +364,9 @@ class _GuardedASGIApp:
             return
 
         request = Request(scope, receive)
-        if not _is_allowed_host_header(request.headers.get("host"), self._allowed_hosts):
+        if not _is_allowed_host_header(
+            request.headers.get("host"), self._allowed_hosts
+        ):
             await PlainTextResponse(HOST_FAILURE_MESSAGE, status_code=403)(
                 scope,
                 receive,

@@ -76,9 +76,7 @@ def test_capture_app_pcm_token_defaults_to_empty():
 # ---------------------------------------------------------------------------
 
 
-def _make_pcm_request(
-    app, headers: dict[str, str] | None = None
-) -> object:
+def _make_pcm_request(app, headers: dict[str, str] | None = None) -> object:
     """Build a mocked POST /pcm request bound to ``app`` with ``headers``."""
     return make_mocked_request(
         "POST",
@@ -104,9 +102,7 @@ async def test_pcm_rejects_missing_bearer():
 async def test_pcm_rejects_wrong_bearer():
     """Mismatched token → 401."""
     app = create_capture_app(pcm_token="secret", gateway=object())
-    request = _make_pcm_request(
-        app, headers={"Authorization": "Bearer wrong"}
-    )
+    request = _make_pcm_request(app, headers={"Authorization": "Bearer wrong"})
 
     response = await handle_pcm(request)
 
@@ -117,9 +113,7 @@ async def test_pcm_rejects_wrong_bearer():
 async def test_pcm_rejects_missing_sample_rate():
     """No X-Sample-Rate → 400 with explanatory error."""
     app = create_capture_app(pcm_token="secret", gateway=object())
-    request = _make_pcm_request(
-        app, headers={"Authorization": "Bearer secret"}
-    )
+    request = _make_pcm_request(app, headers={"Authorization": "Bearer secret"})
 
     response = await handle_pcm(request)
 

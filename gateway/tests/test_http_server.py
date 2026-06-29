@@ -20,7 +20,12 @@ from stackchan_mcp.http_server import (
     build_app,
     make_dispatch_fn,
 )
-from stackchan_mcp.queue import CommandQueue, QueueFull, QueueItem, build_queue_full_error
+from stackchan_mcp.queue import (
+    CommandQueue,
+    QueueFull,
+    QueueItem,
+    build_queue_full_error,
+)
 
 
 class FakeESP32:
@@ -52,7 +57,9 @@ class FakeGateway:
 
 
 @contextlib.asynccontextmanager
-async def _client(app, *, base_url: str = "http://127.0.0.1:8767") -> AsyncIterator[httpx.AsyncClient]:
+async def _client(
+    app, *, base_url: str = "http://127.0.0.1:8767"
+) -> AsyncIterator[httpx.AsyncClient]:
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url=base_url) as client:
@@ -68,7 +75,9 @@ def _headers(session_id: str | None = None, token: str | None = None) -> dict[st
     return headers
 
 
-async def _initialize(client: httpx.AsyncClient, *, token: str | None = None, request_id: int = 1) -> str:
+async def _initialize(
+    client: httpx.AsyncClient, *, token: str | None = None, request_id: int = 1
+) -> str:
     response = await client.post(
         "/mcp",
         json={
@@ -193,7 +202,9 @@ async def test_queue_full_returns_jsonrpc_error_response() -> None:
     async with _client(app) as client:
         session_id = await _initialize(client)
         first = asyncio.create_task(
-            _call_tool(client, session_id=session_id, name="get_device_info", request_id=10)
+            _call_tool(
+                client, session_id=session_id, name="get_device_info", request_id=10
+            )
         )
         await _wait_for_queue_depth(queue, 1)
         second = await _call_tool(

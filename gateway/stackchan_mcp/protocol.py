@@ -65,7 +65,9 @@ class McpMessage(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def make_jsonrpc_request(method: str, params: dict[str, Any], req_id: int) -> dict[str, Any]:
+def make_jsonrpc_request(
+    method: str, params: dict[str, Any], req_id: int
+) -> dict[str, Any]:
     """Create a JSON-RPC 2.0 request payload."""
     return {
         "jsonrpc": "2.0",
@@ -86,7 +88,9 @@ def make_mcp_message(
     }
 
 
-def parse_jsonrpc_response(payload: dict[str, Any]) -> tuple[Any, dict[str, Any] | None]:
+def parse_jsonrpc_response(
+    payload: dict[str, Any],
+) -> tuple[Any, dict[str, Any] | None]:
     """Parse a JSON-RPC 2.0 response.
 
     Returns (result, error) — one of them will be None.

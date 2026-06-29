@@ -75,7 +75,9 @@ async def test_emit_stackchan_event_dispatches_selected_paths(
         assert legacy_params["action"] == "head_pat"
 
     if channels_enabled:
-        channel_index = expected_notify_methods.index(stdio_server.CHANNEL_NOTIFICATION_METHOD)
+        channel_index = expected_notify_methods.index(
+            stdio_server.CHANNEL_NOTIFICATION_METHOD
+        )
         channel_params = notify_calls[channel_index][1]
         assert channel_params == {
             "content": DEFAULT_MESSAGE_TEMPLATES[("touch", "tap")].template,

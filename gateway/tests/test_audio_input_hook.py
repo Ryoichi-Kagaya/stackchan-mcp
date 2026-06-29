@@ -54,12 +54,12 @@ def test_opus_head_packet_structure():
     """RFC 7845 §5.1 — fixed magic + version=1 + standard fields."""
     head = _build_opus_head_packet(channels=1, pre_skip=0, input_sample_rate=16000)
     assert head[:8] == b"OpusHead"
-    assert head[8] == 1                # version
-    assert head[9] == 1                # channel count
-    assert struct.unpack("<H", head[10:12])[0] == 0       # pre-skip
-    assert struct.unpack("<I", head[12:16])[0] == 16000   # input sample rate
-    assert struct.unpack("<h", head[16:18])[0] == 0       # output gain
-    assert head[18] == 0               # channel mapping family
+    assert head[8] == 1  # version
+    assert head[9] == 1  # channel count
+    assert struct.unpack("<H", head[10:12])[0] == 0  # pre-skip
+    assert struct.unpack("<I", head[12:16])[0] == 16000  # input sample rate
+    assert struct.unpack("<h", head[16:18])[0] == 0  # output gain
+    assert head[18] == 0  # channel mapping family
 
 
 # --- Ogg page structure ------------------------------------------------------
@@ -76,18 +76,18 @@ def _parse_ogg_pages(blob: bytes) -> list[dict[str, Any]]:
     pages: list[dict[str, Any]] = []
     i = 0
     while i < len(blob):
-        assert blob[i:i + 4] == b"OggS", f"page magic at offset {i}"
-        assert blob[i + 4] == 0          # version
+        assert blob[i : i + 4] == b"OggS", f"page magic at offset {i}"
+        assert blob[i + 4] == 0  # version
         header_type = blob[i + 5]
-        granule = struct.unpack("<q", blob[i + 6:i + 14])[0]
-        serial = struct.unpack("<I", blob[i + 14:i + 18])[0]
-        page_seq = struct.unpack("<I", blob[i + 18:i + 22])[0]
-        crc = struct.unpack("<I", blob[i + 22:i + 26])[0]
+        granule = struct.unpack("<q", blob[i + 6 : i + 14])[0]
+        serial = struct.unpack("<I", blob[i + 14 : i + 18])[0]
+        page_seq = struct.unpack("<I", blob[i + 18 : i + 22])[0]
+        crc = struct.unpack("<I", blob[i + 22 : i + 26])[0]
         n_segments = blob[i + 26]
-        segment_table = list(blob[i + 27:i + 27 + n_segments])
+        segment_table = list(blob[i + 27 : i + 27 + n_segments])
         body_start = i + 27 + n_segments
         body_len = sum(segment_table)
-        body = blob[body_start:body_start + body_len]
+        body = blob[body_start : body_start + body_len]
         pages.append(
             {
                 "header_type": header_type,
@@ -110,7 +110,7 @@ def test_pack_opus_frames_empty():
 
 def test_pack_opus_frames_minimal():
     """Single-frame stream produces 3 pages: BOS-OpusHead, OpusTags, audio (EOS)."""
-    fake_frame = b"\xfc\xff\xfe"   # 3 bytes is fine; the codec content is opaque to Ogg
+    fake_frame = b"\xfc\xff\xfe"  # 3 bytes is fine; the codec content is opaque to Ogg
     blob = pack_opus_frames_to_ogg([fake_frame], serial=0x12345678)
     pages = _parse_ogg_pages(blob)
     assert len(pages) == 3, [p["header_type"] for p in pages]
@@ -130,7 +130,7 @@ def test_pack_opus_frames_minimal():
     # Audio page (EOS because it's also the last)
     assert pages[2]["header_type"] == 0x04
     assert pages[2]["page_seq"] == 2
-    assert pages[2]["granule"] == GRANULE_PER_FRAME    # one frame's worth
+    assert pages[2]["granule"] == GRANULE_PER_FRAME  # one frame's worth
     assert pages[2]["segments"] == [len(fake_frame)]
     assert pages[2]["body"] == fake_frame
 
@@ -145,8 +145,8 @@ def test_pack_opus_frames_multi_page():
     # 2 header pages + 3 audio pages
     assert len(pages) == 5
     audio = pages[2:]
-    assert [p["header_type"] for p in audio[:-1]] == [0, 0]   # non-last audio pages
-    assert audio[-1]["header_type"] == 0x04                   # last is EOS
+    assert [p["header_type"] for p in audio[:-1]] == [0, 0]  # non-last audio pages
+    assert audio[-1]["header_type"] == 0x04  # last is EOS
     assert [len(p["segments"]) for p in audio] == [50, 50, 20]
     # Granule monotonically increases by frames-per-page * GRANULE_PER_FRAME
     assert audio[0]["granule"] == 50 * GRANULE_PER_FRAME
@@ -204,7 +204,7 @@ def test_pack_opus_frames_crc_matches():
     offset = 0
     for page in pages:
         page_size = 27 + len(page["segments"]) + sum(page["segments"])
-        raw = blob[offset:offset + page_size]
+        raw = blob[offset : offset + page_size]
         # Zero the CRC field (bytes 22..26) and recompute.
         zeroed = raw[:22] + b"\x00\x00\x00\x00" + raw[26:]
         expected = _ogg_crc32(zeroed)
@@ -254,7 +254,7 @@ async def test_push_audio_capture_success(aiohttp_unused_port):
     assert received["auth"] == "Bearer test-token"
     assert received["content_type"] == "audio/ogg"
     assert received["session"] == "sess-abc"
-    assert received["body"][:4] == b"OggS"   # the body really is Ogg
+    assert received["body"][:4] == b"OggS"  # the body really is Ogg
 
 
 @pytest.mark.asyncio

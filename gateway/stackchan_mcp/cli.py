@@ -222,9 +222,7 @@ def _check_port(host: str, port: int) -> tuple[bool, str | None]:
                     # candidate family means the gateway will collide.
                     return (False, _try_get_port_holder(port))
                 reason = exc.strerror or (
-                    os.strerror(exc.errno)
-                    if exc.errno is not None
-                    else str(exc)
+                    os.strerror(exc.errno) if exc.errno is not None else str(exc)
                 )
                 last_error = f"{_BIND_ERROR_PREFIX}{reason}"
             else:
@@ -583,16 +581,11 @@ def _run_preflight() -> int:
 
     audio_hook_url = os.getenv("STACKCHAN_AUDIO_HOOK_URL", "")
     if audio_hook_url:
-        print(
-            f"  STACKCHAN_AUDIO_HOOK_URL  {_redact_url_secrets(audio_hook_url)}"
-        )
+        print(f"  STACKCHAN_AUDIO_HOOK_URL  {_redact_url_secrets(audio_hook_url)}")
         if os.getenv("STACKCHAN_AUDIO_HOOK_TOKEN"):
             print("  STACKCHAN_AUDIO_HOOK_TOKEN set (***redacted***)")
         else:
-            print(
-                "  STACKCHAN_AUDIO_HOOK_TOKEN not set "
-                "(will reuse STACKCHAN_TOKEN)"
-            )
+            print("  STACKCHAN_AUDIO_HOOK_TOKEN not set (will reuse STACKCHAN_TOKEN)")
     else:
         print(
             "  STACKCHAN_AUDIO_HOOK_URL  not set "
@@ -665,8 +658,7 @@ def _run_preflight() -> int:
     if ws_port is not None:
         ws_available, ws_holder = _check_port(host, ws_port)
         print(
-            f"  ws://{host}:{ws_port}   "
-            f"{_format_port_status(ws_available, ws_holder)}"
+            f"  ws://{host}:{ws_port}   {_format_port_status(ws_available, ws_holder)}"
         )
         if not ws_available:
             issues += 1
@@ -760,6 +752,7 @@ async def _run(*, advertise_mdns: bool = True, gateway_only: bool = False) -> No
 
             if mcp_port:
                 from .stdio_server import run_sse_server
+
                 sse_task = asyncio.create_task(run_sse_server(host, mcp_port))
                 try:
                     await stop
@@ -838,7 +831,9 @@ def _prepare_stdio_startup() -> "LockInfo":
     return _acquire_startup_lock()
 
 
-def _run_stdio_gateway(*, advertise_mdns: bool = True, gateway_only: bool = False) -> None:
+def _run_stdio_gateway(
+    *, advertise_mdns: bool = True, gateway_only: bool = False
+) -> None:
     """Run the existing stdio MCP gateway flow."""
     from .ownership import release_lock_if_owner
 
@@ -985,7 +980,9 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(_run_preflight())
 
     if args.command is None:
-        _run_stdio_gateway(advertise_mdns=not args.no_mdns, gateway_only=args.gateway_only)
+        _run_stdio_gateway(
+            advertise_mdns=not args.no_mdns, gateway_only=args.gateway_only
+        )
         return
 
     if args.command == "serve":

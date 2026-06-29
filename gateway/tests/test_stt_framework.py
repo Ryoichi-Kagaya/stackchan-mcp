@@ -96,9 +96,7 @@ async def test_listen_rejects_non_int_duration():
     """Non-integer duration_ms -> ValueError before any engine lookup."""
     reg = EngineRegistry()
     with pytest.raises(ValueError, match="duration_ms"):
-        await listen_and_transcribe(
-            {"duration_ms": "5000"}, registry=reg
-        )
+        await listen_and_transcribe({"duration_ms": "5000"}, registry=reg)
 
 
 @pytest.mark.asyncio
@@ -106,9 +104,7 @@ async def test_listen_rejects_boolean_duration():
     """``bool`` is a subclass of int — guard against it explicitly."""
     reg = EngineRegistry()
     with pytest.raises(ValueError, match="duration_ms"):
-        await listen_and_transcribe(
-            {"duration_ms": True}, registry=reg
-        )
+        await listen_and_transcribe({"duration_ms": True}, registry=reg)
 
 
 @pytest.mark.asyncio
@@ -116,9 +112,7 @@ async def test_listen_rejects_duration_below_minimum():
     """duration_ms < 100 -> ValueError."""
     reg = EngineRegistry()
     with pytest.raises(ValueError, match="duration_ms"):
-        await listen_and_transcribe(
-            {"duration_ms": 50}, registry=reg
-        )
+        await listen_and_transcribe({"duration_ms": 50}, registry=reg)
 
 
 @pytest.mark.asyncio
@@ -126,9 +120,7 @@ async def test_listen_rejects_duration_above_maximum():
     """duration_ms > 30000 -> ValueError."""
     reg = EngineRegistry()
     with pytest.raises(ValueError, match="duration_ms"):
-        await listen_and_transcribe(
-            {"duration_ms": 60000}, registry=reg
-        )
+        await listen_and_transcribe({"duration_ms": 60000}, registry=reg)
 
 
 @pytest.mark.asyncio
@@ -136,9 +128,7 @@ async def test_listen_unregistered_engine_raises():
     """Unregistered engine -> NotImplementedError, listing what's available."""
     reg = EngineRegistry()
     with pytest.raises(NotImplementedError) as exc_info:
-        await listen_and_transcribe(
-            {"duration_ms": 1000}, registry=reg
-        )
+        await listen_and_transcribe({"duration_ms": 1000}, registry=reg)
 
     msg = str(exc_info.value)
     assert "faster-whisper" in msg
@@ -152,16 +142,12 @@ async def test_listen_engine_default_falls_back():
 
     # Empty string -> default
     with pytest.raises(NotImplementedError) as exc_info:
-        await listen_and_transcribe(
-            {"duration_ms": 1000, "engine": ""}, registry=reg
-        )
+        await listen_and_transcribe({"duration_ms": 1000, "engine": ""}, registry=reg)
     assert DEFAULT_ENGINE in str(exc_info.value)
 
     # Non-string -> default (not a TypeError)
     with pytest.raises(NotImplementedError) as exc_info:
-        await listen_and_transcribe(
-            {"duration_ms": 1000, "engine": 123}, registry=reg
-        )
+        await listen_and_transcribe({"duration_ms": 1000, "engine": 123}, registry=reg)
     assert DEFAULT_ENGINE in str(exc_info.value)
 
 
@@ -172,9 +158,7 @@ async def test_listen_requires_gateway():
     reg.register(_FakeEngine(name="faster-whisper"))
 
     with pytest.raises(RuntimeError, match="gateway"):
-        await listen_and_transcribe(
-            {"duration_ms": 1000}, registry=reg
-        )
+        await listen_and_transcribe({"duration_ms": 1000}, registry=reg)
 
 
 @pytest.mark.asyncio

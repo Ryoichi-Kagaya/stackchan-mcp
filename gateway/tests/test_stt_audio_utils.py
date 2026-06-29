@@ -89,9 +89,7 @@ def test_decode_opus_frames_skips_corrupt_frame():
     encoder = opuslib.Encoder(
         DEVICE_SAMPLE_RATE, DEVICE_CHANNELS, opuslib.APPLICATION_VOIP
     )
-    silence = encoder.encode(
-        b"\x00\x00" * SAMPLES_PER_FRAME, SAMPLES_PER_FRAME
-    )
+    silence = encoder.encode(b"\x00\x00" * SAMPLES_PER_FRAME, SAMPLES_PER_FRAME)
 
     decoded = decode_opus_frames([silence, b"\x99\x99\x99\xff", silence])
 

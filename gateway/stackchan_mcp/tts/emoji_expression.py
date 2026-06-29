@@ -14,21 +14,13 @@ EMOJI_FACE_GROUPS: dict[str, tuple[str, ...]] = {
 }
 
 _EMOJI_TO_FACE: dict[str, str] = {
-    emoji: face
-    for face, emojis in EMOJI_FACE_GROUPS.items()
-    for emoji in emojis
+    emoji: face for face, emojis in EMOJI_FACE_GROUPS.items() for emoji in emojis
 }
 _MAPPED_EMOJIS = tuple(
     sorted(_EMOJI_TO_FACE, key=lambda emoji: len(emoji), reverse=True)
 )
 
-_EMOJI_BASE = (
-    "["
-    "\u00a9\u00ae"
-    "\u2600-\u27bf"
-    "\U0001f000-\U0001faff"
-    "]"
-)
+_EMOJI_BASE = "[\u00a9\u00ae\u2600-\u27bf\U0001f000-\U0001faff]"
 _EMOJI_MODIFIER = "[\ufe0f\U0001f3fb-\U0001f3ff]*"
 _EMOJI_SEQUENCE_RE = re.compile(
     f"(?:[0-9#*]\ufe0f?\u20e3|"

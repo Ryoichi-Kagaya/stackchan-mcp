@@ -39,9 +39,7 @@ def test_acquire_when_no_lock_succeeds(lock_path: Path) -> None:
 def test_acquire_writes_proc_start_epoch_when_available(
     monkeypatch: pytest.MonkeyPatch, lock_path: Path
 ) -> None:
-    monkeypatch.setattr(
-        ownership_module, "get_process_start_time", lambda pid: 1234.5
-    )
+    monkeypatch.setattr(ownership_module, "get_process_start_time", lambda pid: 1234.5)
 
     info = acquire_lock("test-owner-1", lock_path)
 
@@ -100,9 +98,7 @@ def test_acquire_when_live_pid_has_wrong_proc_start_overwrites(
             return 3000.0
         return None
 
-    monkeypatch.setattr(
-        ownership_module, "get_process_start_time", fake_start_time
-    )
+    monkeypatch.setattr(ownership_module, "get_process_start_time", fake_start_time)
 
     info = acquire_lock("new-owner", lock_path)
 
@@ -158,9 +154,7 @@ def test_acquire_when_old_schema_live_lock_refuses_without_start_check(
     def fail_start_time(pid: int) -> float | None:
         pytest.fail("old-schema locks must fall back to PID-only checks")
 
-    monkeypatch.setattr(
-        ownership_module, "get_process_start_time", fail_start_time
-    )
+    monkeypatch.setattr(ownership_module, "get_process_start_time", fail_start_time)
 
     with pytest.raises(OwnershipError, match="already owned by old-owner"):
         acquire_lock("new-owner", lock_path)
@@ -182,9 +176,7 @@ def test_acquire_when_proc_start_cannot_be_verified_refuses(
         encoding="utf-8",
     )
     monkeypatch.setattr(ownership_module, "is_pid_alive", lambda pid: True)
-    monkeypatch.setattr(
-        ownership_module, "get_process_start_time", lambda pid: None
-    )
+    monkeypatch.setattr(ownership_module, "get_process_start_time", lambda pid: None)
 
     with pytest.raises(OwnershipError, match="already owned by unverified-owner"):
         acquire_lock("new-owner", lock_path)
