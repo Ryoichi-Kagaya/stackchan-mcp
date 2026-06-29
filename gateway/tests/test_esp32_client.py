@@ -40,7 +40,9 @@ async def test_manager_starts_and_stops():
 async def test_no_device_connected():
     """call_tool returns error when no device is connected."""
     mgr = ESP32Manager()
-    result, error = await mgr.call_tool("self.robot.set_head_angles", {"yaw": 0, "pitch": 0})
+    result, error = await mgr.call_tool(
+        "self.robot.set_head_angles", {"yaw": 0, "pitch": 0}
+    )
     assert result is None
     assert error is not None
     assert "not connected" in error["message"].lower() or "No ESP32" in error["message"]
@@ -149,9 +151,16 @@ async def test_esp32_tool_call_relay(manager):
 
     async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
         # Complete handshake
-        await _complete_handshake(ws, tools=[
-            {"name": "self.robot.set_head_angles", "description": "Set head", "inputSchema": {}}
-        ])
+        await _complete_handshake(
+            ws,
+            tools=[
+                {
+                    "name": "self.robot.set_head_angles",
+                    "description": "Set head",
+                    "inputSchema": {},
+                }
+            ],
+        )
 
         await asyncio.sleep(0.2)
 
@@ -208,6 +217,7 @@ async def test_esp32_disconnect_handling(manager):
 async def test_auth_rejection(manager):
     """Unauthorized connections are rejected."""
     import os
+
     port = manager._test_port
 
     # Set token to require auth
@@ -395,9 +405,7 @@ async def test_manager_call_tool_uses_lane_dispatch_for_existing_api():
     servo_task = asyncio.create_task(
         mgr.call_tool("self.robot.set_head_angles", {"yaw": 0, "pitch": 45})
     )
-    led_task = asyncio.create_task(
-        mgr.call_tool("self.led.set_many", {"colors": "[]"})
-    )
+    led_task = asyncio.create_task(mgr.call_tool("self.led.set_many", {"colors": "[]"}))
 
     await asyncio.wait_for(connection.all_started.wait(), timeout=1.0)
     assert connection.started == [
@@ -549,6 +557,141 @@ async def test_manager_send_tts_state_no_device():
 
     with pytest.raises(ConnectionError):
         await mgr.send_tts_state("start")
+
+
+@pytest.mark.asyncio
+async def test_connection_send_tts_state_sentence_start_carries_text():
+    """sentence_start carries the assistant speech-bubble text on the wire."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="session-tts")  # type: ignore[arg-type]
+
+    await conn.send_tts_state("sentence_start", text="こんにちは")
+
+    assert len(ws.sent) == 1
+    assert json.loads(ws.sent[0]) == {
+        "session_id": "session-tts",
+        "type": "tts",
+        "state": "sentence_start",
+        "text": "こんにちは",
+    }
+
+
+# ---------------------------------------------------------------------------
+# send_stt_text / send_llm_emotion / send_alert / send_system_reboot
+# (firmware display messages — wire formats mirror application.cc
+#  Application::OnIncomingJson)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_connection_send_stt_text_sends_json():
+    """send_stt_text emits {"type":"stt","text"} → SetChatMessage("user", ...)."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="session-stt")  # type: ignore[arg-type]
+
+    await conn.send_stt_text("hello there")
+
+    assert json.loads(ws.sent[0]) == {
+        "session_id": "session-stt",
+        "type": "stt",
+        "text": "hello there",
+    }
+
+
+@pytest.mark.asyncio
+async def test_connection_send_llm_emotion_sends_json():
+    """send_llm_emotion emits {"type":"llm","emotion"} → SetEmotion()."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="session-llm")  # type: ignore[arg-type]
+
+    await conn.send_llm_emotion("happy")
+
+    assert json.loads(ws.sent[0]) == {
+        "session_id": "session-llm",
+        "type": "llm",
+        "emotion": "happy",
+    }
+
+
+@pytest.mark.asyncio
+async def test_connection_send_alert_sends_json():
+    """send_alert emits status/message/emotion → Application::Alert()."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="session-alert")  # type: ignore[arg-type]
+
+    await conn.send_alert("warning", "battery low", "sad")
+
+    assert json.loads(ws.sent[0]) == {
+        "session_id": "session-alert",
+        "type": "alert",
+        "status": "warning",
+        "message": "battery low",
+        "emotion": "sad",
+    }
+
+
+@pytest.mark.asyncio
+async def test_connection_send_system_reboot_sends_json():
+    """send_system_reboot emits {"type":"system","command":"reboot"}."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="session-sys")  # type: ignore[arg-type]
+
+    await conn.send_system_reboot()
+
+    assert json.loads(ws.sent[0]) == {
+        "session_id": "session-sys",
+        "type": "system",
+        "command": "reboot",
+    }
+
+
+@pytest.mark.asyncio
+async def test_connection_display_messages_raise_after_disconnect():
+    """Disconnected connection refuses display sends rather than dropping."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="session-x")  # type: ignore[arg-type]
+    conn.disconnect()
+
+    with pytest.raises(ConnectionError):
+        await conn.send_stt_text("x")
+    with pytest.raises(ConnectionError):
+        await conn.send_llm_emotion("happy")
+    with pytest.raises(ConnectionError):
+        await conn.send_alert("s", "m", "neutral")
+    with pytest.raises(ConnectionError):
+        await conn.send_system_reboot()
+    assert ws.sent == []
+
+
+@pytest.mark.asyncio
+async def test_manager_display_messages_no_device():
+    """ESP32Manager display helpers raise when no device is attached."""
+    mgr = ESP32Manager()
+
+    with pytest.raises(ConnectionError):
+        await mgr.send_stt_text("x")
+    with pytest.raises(ConnectionError):
+        await mgr.send_llm_emotion("happy")
+    with pytest.raises(ConnectionError):
+        await mgr.send_alert("s", "m", "neutral")
+    with pytest.raises(ConnectionError):
+        await mgr.send_system_reboot()
+
+
+@pytest.mark.asyncio
+async def test_manager_send_llm_emotion_relays_to_connection():
+    """Manager forwards to the live connection's wire format end-to-end."""
+    ws = _FakeWebSocket()
+    mgr = ESP32Manager()
+    mgr._connection = ESP32Connection(ws, session_id="session-relay")  # type: ignore[attr-defined,arg-type]
+
+    await mgr.send_llm_emotion("angry")
+
+    assert json.loads(ws.sent[0]) == {
+        "session_id": "session-relay",
+        "type": "llm",
+        "emotion": "angry",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -801,9 +944,7 @@ async def manager_with_hook(monkeypatch):
         )
         return True
 
-    monkeypatch.setattr(
-        "stackchan_mcp.esp32_client.push_audio_capture", _fake_push
-    )
+    monkeypatch.setattr("stackchan_mcp.esp32_client.push_audio_capture", _fake_push)
 
     mgr = ESP32Manager()
     await mgr.start(
@@ -834,12 +975,16 @@ async def test_device_driven_listen_pushes_to_hook(manager_with_hook):
         await _complete_handshake(ws)
 
         # Device-initiated listen.start
-        await ws.send(json.dumps({
-            "session_id": "",  # device fills its own; ignored on receive
-            "type": "listen",
-            "state": "start",
-            "mode": "manual",
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "session_id": "",  # device fills its own; ignored on receive
+                    "type": "listen",
+                    "state": "start",
+                    "mode": "manual",
+                }
+            )
+        )
 
         # Wait for gateway to open the recording slot. We can't observe
         # the gateway's internals through the WS, so poll the module
@@ -858,11 +1003,15 @@ async def test_device_driven_listen_pushes_to_hook(manager_with_hook):
         await asyncio.sleep(0.1)
 
         # Device-initiated listen.stop
-        await ws.send(json.dumps({
-            "session_id": "",
-            "type": "listen",
-            "state": "stop",
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "session_id": "",
+                    "type": "listen",
+                    "state": "stop",
+                }
+            )
+        )
 
         # Wait for the push task to fire (asyncio.create_task in the
         # handler dispatches it eagerly; one event-loop tick is enough,
@@ -889,11 +1038,15 @@ async def test_device_driven_listen_disabled_when_no_hook(manager):
     async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
         await _complete_handshake(ws)
 
-        await ws.send(json.dumps({
-            "type": "listen",
-            "state": "start",
-            "mode": "manual",
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "listen",
+                    "state": "start",
+                    "mode": "manual",
+                }
+            )
+        )
         # Give the gateway time to NOT do anything.
         await asyncio.sleep(0.2)
         assert not is_recording()
@@ -910,11 +1063,15 @@ async def test_device_driven_listen_cleanup_on_disconnect(manager_with_hook):
 
     async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
         await _complete_handshake(ws)
-        await ws.send(json.dumps({
-            "type": "listen",
-            "state": "start",
-            "mode": "manual",
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "listen",
+                    "state": "start",
+                    "mode": "manual",
+                }
+            )
+        )
         for _ in range(20):
             await asyncio.sleep(0.05)
             if is_recording():
@@ -932,4 +1089,3 @@ async def test_device_driven_listen_cleanup_on_disconnect(manager_with_hook):
     assert not is_recording(), "recording slot was leaked across connections"
     # No push should have fired for the aborted capture.
     assert calls == []
-

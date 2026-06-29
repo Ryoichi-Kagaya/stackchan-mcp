@@ -119,7 +119,9 @@ class ESP32Connection:
         req_id = self._next_id()
         message = make_mcp_message(self.session_id, method, params, req_id)
 
-        future: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_event_loop().create_future()
+        )
         self._pending[req_id] = future
 
         try:
@@ -131,11 +133,17 @@ class ESP32Connection:
             raise
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
-            return None, {"code": -32000, "message": f"Timeout waiting for ESP32 response (method={method})"}
+            return None, {
+                "code": -32000,
+                "message": f"Timeout waiting for ESP32 response (method={method})",
+            }
         except Exception as exc:
             self._pending.pop(req_id, None)
             _retrieve_future_exception(future)
-            return None, {"code": -32000, "message": f"ESP32 communication error: {exc}"}
+            return None, {
+                "code": -32000,
+                "message": f"ESP32 communication error: {exc}",
+            }
 
     async def initialize(self, vision_url: str = "", vision_token: str = "") -> bool:
         """Send MCP initialize to ESP32."""
@@ -145,7 +153,9 @@ class ESP32Connection:
             if vision_token:
                 vision["token"] = vision_token
             capabilities["vision"] = vision
-        result, error = await self.send_mcp_request("initialize", {"capabilities": capabilities})
+        result, error = await self.send_mcp_request(
+            "initialize", {"capabilities": capabilities}
+        )
         if error:
             logger.error("ESP32 initialize failed: %s", error)
             return False
@@ -208,7 +218,9 @@ class ESP32Connection:
         if not self._connected:
             return {"ok": False, "checksum": checksum, "error": "not_connected"}
 
-        future: asyncio.Future[dict[str, Any]] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_event_loop().create_future()
+        )
         # Last-writer-wins on duplicate checksum: cancel the previous waiter
         # so the same set being re-pushed doesn't strand callers.
         previous = self._avatar_set_waiters.pop(checksum, None)
@@ -296,7 +308,13 @@ class ESP32Connection:
             raise ConnectionError("ESP32 not connected")
         await self._ws_send(opus_frame)
 
-    async def send_tts_state(self, state: str) -> None:
+    async def send_tts_state(
+        self,
+        state: str,
+        *,
+        emotion: str | None = None,
+        text: str | None = None,
+    ) -> None:
         """Send a TTS state notification (``start`` / ``stop`` / ...).
 
         The device's :func:`Application::OnIncomingJson` translates
@@ -307,13 +325,88 @@ class ESP32Connection:
         audio frames in start/stop, the device drops them on the floor
         and the speaker stays silent — the TTS tool returns success
         without anything actually playing.
+
+        ``state="sentence_start"`` additionally carries ``text``, which the
+        firmware renders as the assistant speech bubble via
+        ``display->SetChatMessage("assistant", text)``. ``emotion`` is
+        accepted for forward-compatibility but is **ignored by the
+        firmware on tts.start** — use :meth:`send_llm_emotion` for face
+        updates.
+        """
+        if not self._connected:
+            raise ConnectionError("ESP32 not connected")
+        message: dict[str, Any] = {
+            "session_id": self.session_id,
+            "type": "tts",
+            "state": state,
+        }
+        if emotion is not None:
+            message["emotion"] = emotion
+        if text is not None:
+            message["text"] = text
+        await self._ws_send(json.dumps(message))
+
+    async def send_stt_text(self, text: str) -> None:
+        """Send the recognised user utterance as a ``stt`` display line.
+
+        ``{"type":"stt","text": ...}`` is dispatched by the firmware to
+        ``display->SetChatMessage("user", text)`` (``application.cc``),
+        showing the user's speech bubble on the LCD while the gateway is
+        still waiting on familiar-ai's reply.
         """
         if not self._connected:
             raise ConnectionError("ESP32 not connected")
         message = {
             "session_id": self.session_id,
-            "type": "tts",
-            "state": state,
+            "type": "stt",
+            "text": text,
+        }
+        await self._ws_send(json.dumps(message))
+
+    async def send_llm_emotion(self, emotion: str) -> None:
+        """Send a face-update line: ``{"type":"llm","emotion": ...}``.
+
+        This is the **only** server-driven path the firmware reads for
+        ``display->SetEmotion()``; the ``emotion`` field on ``tts.start``
+        is silently ignored (``application.cc``). Send this before
+        ``tts.start`` so the face is set before the speaking animation.
+        """
+        if not self._connected:
+            raise ConnectionError("ESP32 not connected")
+        message = {
+            "session_id": self.session_id,
+            "type": "llm",
+            "emotion": emotion,
+        }
+        await self._ws_send(json.dumps(message))
+
+    async def send_alert(self, status: str, message_text: str, emotion: str) -> None:
+        """Send an ``alert`` (status banner + chat message + face + buzz).
+
+        Maps to ``Application::Alert(status, message, emotion,
+        OGG_VIBRATION)`` in the firmware. All three fields must be
+        non-empty strings; otherwise the firmware logs a warning and
+        drops the alert.
+        """
+        if not self._connected:
+            raise ConnectionError("ESP32 not connected")
+        message = {
+            "session_id": self.session_id,
+            "type": "alert",
+            "status": status,
+            "message": message_text,
+            "emotion": emotion,
+        }
+        await self._ws_send(json.dumps(message))
+
+    async def send_system_reboot(self) -> None:
+        """Send ``{"type":"system","command":"reboot"}`` → ``Reboot()``."""
+        if not self._connected:
+            raise ConnectionError("ESP32 not connected")
+        message = {
+            "session_id": self.session_id,
+            "type": "system",
+            "command": "reboot",
         }
         await self._ws_send(json.dumps(message))
 
@@ -603,7 +696,13 @@ class ESP32Manager:
                     # continues to pump messages (responses to initialize/tools_list)
                     task = asyncio.create_task(self._init_device(connection, device_id))
                     self._init_tasks.append(task)
-                    task.add_done_callback(lambda t: self._init_tasks.remove(t) if t in self._init_tasks else None)
+                    task.add_done_callback(
+                        lambda t: (
+                            self._init_tasks.remove(t)
+                            if t in self._init_tasks
+                            else None
+                        )
+                    )
 
                 elif msg_type == "mcp":
                     # MCP response from ESP32
@@ -655,18 +754,18 @@ class ESP32Manager:
                             start_recording(session_id)
                             self._device_driven_session_id = session_id
                             logger.info(
-                                "device-driven listen started: "
-                                "session=%s mode=%s",
-                                session_id, data.get("mode", ""),
+                                "device-driven listen started: session=%s mode=%s",
+                                session_id,
+                                data.get("mode", ""),
                             )
                     elif state == "stop":
                         if self._device_driven_session_id == session_id:
                             self._device_driven_session_id = None
                             frames = stop_recording()
                             logger.info(
-                                "device-driven listen stopped: "
-                                "session=%s frames=%d",
-                                session_id, len(frames),
+                                "device-driven listen stopped: session=%s frames=%d",
+                                session_id,
+                                len(frames),
                             )
                             # Push asynchronously so the WebSocket read
                             # loop is not blocked by the HTTP POST
@@ -683,9 +782,9 @@ class ESP32Manager:
                             )
                     else:
                         logger.debug(
-                            "listen message with unknown state=%r "
-                            "session=%s",
-                            state, session_id,
+                            "listen message with unknown state=%r session=%s",
+                            state,
+                            session_id,
                         )
 
                 else:
@@ -715,7 +814,8 @@ class ESP32Manager:
                     logger.warning(
                         "device-driven listen aborted mid-capture: "
                         "session=%s discarded %d frames",
-                        session_id, len(discarded),
+                        session_id,
+                        len(discarded),
                     )
             elif self._device_driven_session_id == session_id:
                 # Our handler thought it owned the slot, but audio_stream
@@ -862,9 +962,7 @@ class ESP32Manager:
                     "stackchan-event log persistence raised unexpectedly: %s", exc
                 )
 
-    async def call_tool(
-        self, name: str, arguments: dict[str, Any]
-    ) -> ToolCallResult:
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolCallResult:
         """Call a tool on the connected ESP32 device."""
         result = await self.call_tools([(name, arguments)])
         return result[0]
@@ -948,16 +1046,58 @@ class ESP32Manager:
             raise ConnectionError("No ESP32 device connected")
         await self._connection.send_audio_frame(opus_frame)
 
-    async def send_tts_state(self, state: str) -> None:
+    async def send_tts_state(
+        self,
+        state: str,
+        *,
+        emotion: str | None = None,
+        text: str | None = None,
+    ) -> None:
         """Send a TTS state notification (``start`` / ``stop`` / ...).
 
         Required around audio frame egress so the device transitions
         into ``kDeviceStateSpeaking`` and back; see
-        :meth:`ESP32Connection.send_tts_state` for the full rationale.
+        :meth:`ESP32Connection.send_tts_state` for the full rationale and
+        the ``sentence_start`` ``text`` payload.
         """
         if not self._connection or not self._connection.connected:
             raise ConnectionError("No ESP32 device connected")
-        await self._connection.send_tts_state(state)
+        await self._connection.send_tts_state(state, emotion=emotion, text=text)
+
+    async def send_stt_text(self, text: str) -> None:
+        """Send the recognised user utterance as a ``stt`` display line.
+
+        See :meth:`ESP32Connection.send_stt_text` for the wire format and
+        the firmware-side ``SetChatMessage("user", ...)`` dispatch.
+        """
+        if not self._connection or not self._connection.connected:
+            raise ConnectionError("No ESP32 device connected")
+        await self._connection.send_stt_text(text)
+
+    async def send_llm_emotion(self, emotion: str) -> None:
+        """Send a face-update line (``{"type":"llm","emotion": ...}``).
+
+        See :meth:`ESP32Connection.send_llm_emotion`; this is the only
+        server-driven path the firmware reads for ``SetEmotion()``.
+        """
+        if not self._connection or not self._connection.connected:
+            raise ConnectionError("No ESP32 device connected")
+        await self._connection.send_llm_emotion(emotion)
+
+    async def send_alert(self, status: str, message_text: str, emotion: str) -> None:
+        """Send an ``alert`` (status banner + chat message + face + buzz).
+
+        See :meth:`ESP32Connection.send_alert` for the firmware mapping.
+        """
+        if not self._connection or not self._connection.connected:
+            raise ConnectionError("No ESP32 device connected")
+        await self._connection.send_alert(status, message_text, emotion)
+
+    async def send_system_reboot(self) -> None:
+        """Send a reboot command (``{"type":"system","command":"reboot"}``)."""
+        if not self._connection or not self._connection.connected:
+            raise ConnectionError("No ESP32 device connected")
+        await self._connection.send_system_reboot()
 
     async def send_listen_state(self, state: str, mode: str = "manual") -> None:
         """Send a listen state notification to put the device into /
