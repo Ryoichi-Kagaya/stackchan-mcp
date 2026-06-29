@@ -709,7 +709,6 @@ def _run_preflight() -> int:
 async def _run(*, advertise_mdns: bool = True, gateway_only: bool = False) -> None:
     """Start the ESP32 WebSocket gateway, and optionally the stdio or SSE MCP server."""
     import contextlib
-    import signal
 
     from .event_log import rotate_old_entries
     from .gateway import get_gateway
