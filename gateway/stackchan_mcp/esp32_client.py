@@ -500,6 +500,16 @@ class ESP32Manager:
         # and protocol details.
         self._audio_hook_url: str = ""
         self._audio_hook_token: str = ""
+        # xiaozhi AI agent mode (familiar-ai conversation loop). When
+        # ``_familiar_url`` is configured (``FAMILIAR_URL``), a device whose
+        # hello carries ``audio_params`` drives a STT → familiar-ai → TTS
+        # conversation: the ``listen`` branch routes to ``_conversation``
+        # instead of the device-driven audio_hook path. Unset = disabled,
+        # leaving the pure-MCP / AVATAR behaviour unchanged. See
+        # :mod:`stackchan_mcp.conversation` for the loop itself.
+        self._familiar_url: str = ""
+        self._conversation: Any = None
+        self._conversation_task: asyncio.Task | None = None
         # session_id (when device-driven listen has the recording slot
         # open) or None. Storing the session_id rather than a plain bool
         # lets the per-handler disconnect cleanup confirm it still owns
@@ -560,16 +570,23 @@ class ESP32Manager:
         vision_token: str = "",
         audio_hook_url: str = "",
         audio_hook_token: str = "",
+        familiar_url: str = "",
     ) -> None:
         """Start the WebSocket server for ESP32 connections."""
         self._vision_url = vision_url
         self._vision_token = vision_token
         self._audio_hook_url = audio_hook_url
         self._audio_hook_token = audio_hook_token
+        self._familiar_url = familiar_url
         if audio_hook_url:
             logger.info(
                 "Device-driven listen capture enabled (audio hook %s)",
                 audio_hook_url,
+            )
+        if familiar_url:
+            logger.info(
+                "xiaozhi AI agent mode enabled (familiar-ai %s)",
+                familiar_url,
             )
         logger.info("ESP32 WebSocket server starting on ws://%s:%d", host, port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -588,6 +605,9 @@ class ESP32Manager:
         for task in self._init_tasks:
             task.cancel()
         self._init_tasks.clear()
+
+        # Tear down any xiaozhi conversation loop still running.
+        self._stop_conversation()
 
         if self._server:
             self._server.close()
@@ -614,6 +634,51 @@ class ESP32Manager:
         return websockets.http11.Response(
             401, "Unauthorized", websockets.datastructures.Headers()
         )
+
+    def _wants_conversation(self, hello: dict[str, Any]) -> bool:
+        """Return True if this hello should start a xiaozhi conversation loop.
+
+        Gated on both ``_familiar_url`` being configured (opt-in, mirrors the
+        audio_hook path) and the device declaring ``audio_params`` in its
+        hello — the marker that distinguishes xiaozhi AI agent mode from the
+        AVATAR app, which connects without audio parameters.
+        """
+        return bool(self._familiar_url) and hello.get("audio_params") is not None
+
+    async def _start_conversation(
+        self, connection: ESP32Connection, session_id: str
+    ) -> None:
+        """Spin up the xiaozhi conversation loop for *session_id*.
+
+        ``conversation`` (and its STT/TTS engines) is imported lazily so the
+        gateway has no hard dependency on the voice extras unless xiaozhi
+        mode is actually used.
+        """
+        try:
+            from .conversation import ConversationManager
+        except ImportError as exc:  # pragma: no cover - depends on optional extras
+            logger.warning(
+                "xiaozhi conversation mode requested but unavailable "
+                "(missing voice extras?): %s",
+                exc,
+            )
+            return
+
+        # Replace any prior conversation (e.g. a reconnect) before starting.
+        self._stop_conversation()
+        conv = ConversationManager(self, self._familiar_url, session_id)
+        self._conversation = conv
+        self._conversation_task = asyncio.create_task(conv.run())
+        logger.info("xiaozhi conversation loop started: session=%s", session_id)
+
+    def _stop_conversation(self) -> None:
+        """Stop and detach the active conversation loop, if any."""
+        if self._conversation is not None:
+            self._conversation.stop()
+            self._conversation = None
+        if self._conversation_task is not None:
+            self._conversation_task.cancel()
+            self._conversation_task = None
 
     async def _handler(self, ws: ServerConnection) -> None:
         """Handle an incoming ESP32 WebSocket connection.
@@ -690,6 +755,10 @@ class ESP32Manager:
                         if self._connection and self._connection.connected:
                             logger.warning("Replacing existing ESP32 connection")
                             self._connection.disconnect()
+                            # Tear down the previous device's conversation
+                            # loop so it cannot consume listen events meant
+                            # for the new session.
+                            self._stop_conversation()
                         self._connection = connection
 
                     # Start initialization as a separate task so the read loop
@@ -703,6 +772,13 @@ class ESP32Manager:
                             else None
                         )
                     )
+
+                    # xiaozhi AI agent mode: a device that declares
+                    # audio_params drives a familiar-ai conversation loop.
+                    # Opt-in via FAMILIAR_URL; otherwise behaviour is
+                    # unchanged (pure MCP / AVATAR).
+                    if self._wants_conversation(data):
+                        await self._start_conversation(connection, session_id)
 
                 elif msg_type == "mcp":
                     # MCP response from ESP32
@@ -733,7 +809,25 @@ class ESP32Manager:
                     # :mod:`stackchan_mcp.audio_input_hook` for the
                     # forwarding pipeline.
                     state = data.get("state", "")
-                    if state == "start":
+                    conv = self._conversation
+                    if conv is not None and conv.session_id == session_id:
+                        # xiaozhi AI agent mode: feed the conversation loop
+                        # (STT → familiar-ai → TTS) instead of the
+                        # device-driven audio_hook path. The conversation
+                        # manager opens/closes the shared recording slot
+                        # itself, so the audio_hook branch is skipped.
+                        if state == "start":
+                            conv.on_listen_start(session_id)
+                        elif state == "stop":
+                            conv.on_listen_stop(session_id)
+                        else:
+                            logger.debug(
+                                "listen message with unknown state=%r "
+                                "session=%s (conversation mode)",
+                                state,
+                                session_id,
+                            )
+                    elif state == "start":
                         if not self._audio_hook_url:
                             logger.debug(
                                 "device-driven listen.start session=%s "
@@ -826,6 +920,12 @@ class ESP32Manager:
             async with self._lock:
                 if self._connection is connection:
                     self._connection = None
+                # Tear down the conversation loop bound to this session so a
+                # disconnect doesn't leave an orphaned task waiting on listen
+                # events that will never arrive.
+                conv = self._conversation
+                if conv is not None and conv.session_id == session_id:
+                    self._stop_conversation()
 
     async def _init_device(self, connection: ESP32Connection, device_id: str) -> None:
         """Initialize MCP session with a newly connected device."""

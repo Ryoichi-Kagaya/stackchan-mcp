@@ -24,6 +24,7 @@ def _patch_gateway_network(monkeypatch: pytest.MonkeyPatch, gw: Gateway) -> list
             vision_token: str,
             audio_hook_url: str = "",
             audio_hook_token: str = "",
+            familiar_url: str = "",
         ) -> None:
             self._server = object()
             calls.append(("esp32_start", host, port, vision_url, vision_token))
@@ -66,6 +67,7 @@ def test_get_gateway_singleton():
     """get_gateway returns the same instance."""
     # Reset singleton for test isolation
     import stackchan_mcp.gateway as gw_mod
+
     gw_mod._gateway = None
 
     g1 = get_gateway()
@@ -191,9 +193,7 @@ async def test_gateway_start_can_disable_mdns(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gateway_mdns_start_failure_does_not_abort(
-    monkeypatch, caplog
-):
+async def test_gateway_mdns_start_failure_does_not_abort(monkeypatch, caplog):
     """mDNS registration failure logs a warning but gateway startup continues."""
     import stackchan_mcp.gateway as gw_mod
 
@@ -221,9 +221,7 @@ async def test_gateway_mdns_start_failure_does_not_abort(
 
 
 @pytest.mark.asyncio
-async def test_gateway_mdns_stop_failure_does_not_mask_shutdown(
-    monkeypatch, caplog
-):
+async def test_gateway_mdns_stop_failure_does_not_mask_shutdown(monkeypatch, caplog):
     """mDNS unregister failure logs a warning and shutdown still completes."""
     import stackchan_mcp.gateway as gw_mod
 

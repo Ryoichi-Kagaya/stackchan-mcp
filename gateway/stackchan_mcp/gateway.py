@@ -109,6 +109,18 @@ class Gateway:
         )
 
     @property
+    def familiar_url(self) -> str:
+        """URL of the familiar-ai ``/voice_turn`` endpoint for xiaozhi mode.
+
+        ``FAMILIAR_URL`` enables xiaozhi AI agent mode: when set, a device
+        whose hello carries ``audio_params`` drives a STT → familiar-ai → TTS
+        conversation loop (see :mod:`stackchan_mcp.conversation`). Unset =
+        disabled — the gateway keeps its pure-MCP / AVATAR behaviour. Give a
+        full URL, e.g. ``http://localhost:8090/voice_turn``.
+        """
+        return os.getenv("FAMILIAR_URL", "")
+
+    @property
     def pcm_token(self) -> str:
         """Bearer token expected by the /pcm HTTP endpoint.
 
@@ -140,6 +152,7 @@ class Gateway:
             vision_token=self.vision_token,
             audio_hook_url=self.audio_hook_url,
             audio_hook_token=self.audio_hook_token,
+            familiar_url=self.familiar_url,
         )
 
         # Start HTTP capture server. Hosts /capture, /pcm, and the

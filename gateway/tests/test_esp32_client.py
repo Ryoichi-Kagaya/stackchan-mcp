@@ -869,8 +869,13 @@ def test_connection_default_protocol_version_is_one():
 # ---------------------------------------------------------------------------
 
 
-async def _complete_handshake(ws, tools=None):
-    """Complete the full ESP32 handshake sequence."""
+async def _complete_handshake(ws, tools=None, *, audio_params=False):
+    """Complete the full ESP32 handshake sequence.
+
+    Set ``audio_params=True`` to emulate a device connecting in xiaozhi
+    AI agent mode (the marker the gateway uses to start a conversation
+    loop); omit it for AVATAR / pure-MCP devices.
+    """
     if tools is None:
         tools = []
 
@@ -881,6 +886,13 @@ async def _complete_handshake(ws, tools=None):
         "features": {"mcp": True},
         "transport": "websocket",
     }
+    if audio_params:
+        hello["audio_params"] = {
+            "format": "opus",
+            "sample_rate": 16000,
+            "channels": 1,
+            "frame_duration": 60,
+        }
     await ws.send(json.dumps(hello))
 
     # Receive hello response
@@ -1089,3 +1101,140 @@ async def test_device_driven_listen_cleanup_on_disconnect(manager_with_hook):
     assert not is_recording(), "recording slot was leaked across connections"
     # No push should have fired for the aborted capture.
     assert calls == []
+
+
+# --- xiaozhi conversation mode wiring -----------------------------------------
+
+
+class _FakeConversation:
+    """Records lifecycle + listen events without real STT/TTS.
+
+    Stands in for :class:`stackchan_mcp.conversation.ConversationManager`
+    so the handler's wiring can be tested without the voice extras or a
+    familiar-ai backend.
+    """
+
+    def __init__(self, esp32, familiar_url, session_id):
+        self.esp32 = esp32
+        self.familiar_url = familiar_url
+        self._session_id = session_id
+        self.events: list[str] = []
+        self.stopped = False
+        self._stop_event = asyncio.Event()
+
+    @property
+    def session_id(self):
+        return self._session_id
+
+    def on_listen_start(self, session_id):
+        if session_id == self._session_id:
+            self.events.append("start")
+
+    def on_listen_stop(self, session_id):
+        if session_id == self._session_id:
+            self.events.append("stop")
+
+    def stop(self):
+        self.stopped = True
+        self._stop_event.set()
+
+    async def run(self):
+        await self._stop_event.wait()
+
+
+@pytest_asyncio.fixture
+async def manager_with_familiar(monkeypatch):
+    """ESP32Manager started with FAMILIAR_URL, ConversationManager faked."""
+    created: list[_FakeConversation] = []
+
+    def _factory(esp32, familiar_url, session_id):
+        conv = _FakeConversation(esp32, familiar_url, session_id)
+        created.append(conv)
+        return conv
+
+    monkeypatch.setattr("stackchan_mcp.conversation.ConversationManager", _factory)
+
+    mgr = ESP32Manager()
+    await mgr.start("127.0.0.1", 0, familiar_url="http://familiar/voice_turn")
+    mgr._test_port = mgr._server.sockets[0].getsockname()[1]
+    try:
+        yield mgr, created
+    finally:
+        await mgr.stop()
+
+
+@pytest.mark.asyncio
+async def test_wants_conversation_gating():
+    """Conversation mode requires both FAMILIAR_URL and a device audio_params."""
+    mgr = ESP32Manager()
+
+    # Disabled until a familiar_url is configured, even with audio_params.
+    assert mgr._wants_conversation({"audio_params": {}}) is False
+
+    mgr._familiar_url = "http://familiar/voice_turn"
+    assert mgr._wants_conversation({"audio_params": {}}) is True
+    # AVATAR / pure-MCP device: no audio_params → no conversation.
+    assert mgr._wants_conversation({"features": {"mcp": True}}) is False
+
+
+@pytest.mark.asyncio
+async def test_stop_conversation_is_safe_when_none():
+    """_stop_conversation is a no-op when no conversation is active."""
+    mgr = ESP32Manager()
+    mgr._stop_conversation()
+    assert mgr._conversation is None
+    assert mgr._conversation_task is None
+
+
+@pytest.mark.asyncio
+async def test_hello_with_audio_params_starts_and_routes_conversation(
+    manager_with_familiar,
+):
+    """audio_params hello starts a conversation; listen events route to it;
+    disconnect tears it down."""
+    mgr, created = manager_with_familiar
+    port = mgr._test_port
+
+    async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+        await _complete_handshake(ws, audio_params=True)
+
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            if created:
+                break
+        assert len(created) == 1, "conversation loop was not started"
+        conv = created[0]
+        assert conv.familiar_url == "http://familiar/voice_turn"
+        assert mgr._conversation is conv
+
+        # listen.start / listen.stop route to the conversation loop, not
+        # the audio_hook path.
+        await ws.send(json.dumps({"type": "listen", "state": "start"}))
+        await ws.send(json.dumps({"type": "listen", "state": "stop"}))
+
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            if conv.events == ["start", "stop"]:
+                break
+        assert conv.events == ["start", "stop"]
+
+    # Disconnect must stop and detach the conversation.
+    for _ in range(40):
+        await asyncio.sleep(0.05)
+        if mgr._conversation is None:
+            break
+    assert mgr._conversation is None
+    assert conv.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_hello_without_audio_params_no_conversation(manager_with_familiar):
+    """An AVATAR / pure-MCP hello (no audio_params) starts no conversation."""
+    mgr, created = manager_with_familiar
+    port = mgr._test_port
+
+    async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+        await _complete_handshake(ws)  # no audio_params
+        await asyncio.sleep(0.3)
+        assert created == []
+        assert mgr._conversation is None

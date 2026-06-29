@@ -70,6 +70,16 @@ class ConversationManager:
         self._listen_stop_event: asyncio.Event = asyncio.Event()
         self._stopped = False
 
+    @property
+    def session_id(self) -> str:
+        """The ESP32 connection session this conversation is bound to.
+
+        The handler compares this against the inbound ``listen`` message's
+        session so a stale conversation cannot consume events for a device
+        that has since reconnected with a fresh session id.
+        """
+        return self._session_id
+
     # ------------------------------------------------------------------
     # Public event callbacks (called from the WebSocket message loop)
     # ------------------------------------------------------------------
