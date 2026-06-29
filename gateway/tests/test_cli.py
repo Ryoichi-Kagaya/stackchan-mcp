@@ -182,7 +182,9 @@ def test_main_default_advertises_mdns(monkeypatch: pytest.MonkeyPatch) -> None:
 
     called: dict[str, bool] = {}
 
-    async def fake_run(*, advertise_mdns: bool = True) -> None:
+    async def fake_run(
+        *, advertise_mdns: bool = True, gateway_only: bool = False
+    ) -> None:
         called["advertise_mdns"] = advertise_mdns
 
     monkeypatch.setattr(cli, "_prepare_stdio_startup", _fake_lock_info)
@@ -203,7 +205,9 @@ def test_main_no_mdns_disables_advertisement(
 
     called: dict[str, bool] = {}
 
-    async def fake_run(*, advertise_mdns: bool = True) -> None:
+    async def fake_run(
+        *, advertise_mdns: bool = True, gateway_only: bool = False
+    ) -> None:
         called["advertise_mdns"] = advertise_mdns
 
     monkeypatch.setattr(cli, "_prepare_stdio_startup", _fake_lock_info)
