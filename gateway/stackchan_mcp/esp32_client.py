@@ -41,6 +41,16 @@ logger = logging.getLogger(__name__)
 # Timeout for waiting for ESP32 responses
 RESPONSE_TIMEOUT = 10.0
 
+# AVATAR-mode application heartbeat. The AVATAR firmware
+# (firmware/main/hal/hal_ws_avatar.cpp) expects the server to send a
+# HeartbeatPing (binary DataType 0x10) within every 10s window; on receipt
+# it refreshes its timer and replies with a Pong. Without it the device
+# logs "Heartbeat timeout!" every 10s and skips a stream cycle. We ping
+# every 5s to stay comfortably inside that window. The frame matches the
+# firmware wire format: [type=0x10][length=0, big-endian uint32].
+HEARTBEAT_PING_INTERVAL = 5.0
+_HEARTBEAT_PING_FRAME = b"\x10\x00\x00\x00\x00"
+
 ToolCall = tuple[str, dict[str, Any]]
 ToolCallResult = tuple[Any, dict[str, Any] | None]
 
@@ -308,6 +318,18 @@ class ESP32Connection:
             raise ConnectionError("ESP32 not connected")
         await self._ws_send(opus_frame)
 
+    async def send_heartbeat_ping(self) -> None:
+        """Send an AVATAR-mode application heartbeat ping (DataType 0x10).
+
+        Only valid for AVATAR / pure-MCP connections. The xiaozhi
+        conversation firmware path (websocket_protocol.cc) treats every
+        binary frame as an Opus audio payload, so this must never be sent
+        to a conversation-mode device — see :meth:`ESP32Manager._is_avatar_mode`.
+        """
+        if not self._connected:
+            raise ConnectionError("ESP32 not connected")
+        await self._ws_send(_HEARTBEAT_PING_FRAME)
+
     async def send_tts_state(
         self,
         state: str,
@@ -510,6 +532,8 @@ class ESP32Manager:
         self._familiar_url: str = ""
         self._conversation: Any = None
         self._conversation_task: asyncio.Task | None = None
+        # AVATAR-mode application heartbeat sender (see HEARTBEAT_PING_INTERVAL).
+        self._heartbeat_task: asyncio.Task | None = None
         # session_id (when device-driven listen has the recording slot
         # open) or None. Storing the session_id rather than a plain bool
         # lets the per-handler disconnect cleanup confirm it still owns
@@ -608,6 +632,8 @@ class ESP32Manager:
 
         # Tear down any xiaozhi conversation loop still running.
         self._stop_conversation()
+        # Stop the AVATAR-mode heartbeat loop, if any.
+        self._stop_heartbeat()
 
         if self._server:
             self._server.close()
@@ -644,6 +670,46 @@ class ESP32Manager:
         AVATAR app, which connects without audio parameters.
         """
         return bool(self._familiar_url) and hello.get("audio_params") is not None
+
+    def _is_avatar_mode(self, hello: dict[str, Any]) -> bool:
+        """Return True if this hello comes from the AVATAR firmware path.
+
+        The AVATAR client (hal_ws_avatar.cpp) connects without
+        ``audio_params`` and speaks the binary DataType protocol, which
+        includes the 0x10 application heartbeat. The xiaozhi conversation
+        firmware declares ``audio_params`` and treats every binary frame as
+        Opus audio, so the heartbeat ping must not be sent there — gating on
+        the *absence* of ``audio_params`` (not on ``_wants_conversation``)
+        also keeps a xiaozhi device safe when ``FAMILIAR_URL`` is unset.
+        """
+        return hello.get("audio_params") is None
+
+    def _start_heartbeat(self, connection: ESP32Connection) -> None:
+        """Start the AVATAR-mode heartbeat ping loop for *connection*."""
+        self._stop_heartbeat()
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(connection))
+
+    def _stop_heartbeat(self) -> None:
+        """Cancel and detach the active heartbeat loop, if any."""
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
+
+    async def _heartbeat_loop(self, connection: ESP32Connection) -> None:
+        """Ping the device's application heartbeat until it disconnects.
+
+        Stops on the first failed send (``_ws_send`` marks the connection
+        dead and raises ``ConnectionError``) so a broken socket doesn't keep
+        a doomed task alive.
+        """
+        while connection.connected:
+            await asyncio.sleep(HEARTBEAT_PING_INTERVAL)
+            if not connection.connected:
+                break
+            try:
+                await connection.send_heartbeat_ping()
+            except ConnectionError:
+                break
 
     async def _start_conversation(
         self, connection: ESP32Connection, session_id: str
@@ -759,6 +825,7 @@ class ESP32Manager:
                             # loop so it cannot consume listen events meant
                             # for the new session.
                             self._stop_conversation()
+                            self._stop_heartbeat()
                         self._connection = connection
 
                     # Start initialization as a separate task so the read loop
@@ -779,6 +846,11 @@ class ESP32Manager:
                     # unchanged (pure MCP / AVATAR).
                     if self._wants_conversation(data):
                         await self._start_conversation(connection, session_id)
+                    elif self._is_avatar_mode(data):
+                        # AVATAR / pure-MCP mode: keep the firmware's
+                        # application heartbeat alive so it stops logging
+                        # "Heartbeat timeout!" every 10s.
+                        self._start_heartbeat(connection)
 
                 elif msg_type == "mcp":
                     # MCP response from ESP32
@@ -920,6 +992,10 @@ class ESP32Manager:
             async with self._lock:
                 if self._connection is connection:
                     self._connection = None
+                    # Stop this connection's heartbeat loop. Guarded by
+                    # identity so a reconnect that already replaced us (and
+                    # armed its own heartbeat) is left untouched.
+                    self._stop_heartbeat()
                 # Tear down the conversation loop bound to this session so a
                 # disconnect doesn't leave an orphaned task waiting on listen
                 # events that will never arrive.

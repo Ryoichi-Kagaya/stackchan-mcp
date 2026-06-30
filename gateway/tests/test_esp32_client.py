@@ -520,6 +520,147 @@ async def test_manager_send_audio_frame_no_device():
         await mgr.send_audio_frame(b"opus_payload_bytes")
 
 
+# ---------------------------------------------------------------------------
+# AVATAR-mode application heartbeat (firmware hal_ws_avatar.cpp)
+# ---------------------------------------------------------------------------
+
+_HEARTBEAT_FRAME = b"\x10\x00\x00\x00\x00"
+
+
+@pytest.mark.asyncio
+async def test_connection_send_heartbeat_ping_sends_frame():
+    """send_heartbeat_ping emits the firmware's 5-byte 0x10 wire frame."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="hb")  # type: ignore[arg-type]
+
+    await conn.send_heartbeat_ping()
+
+    assert ws.sent == [_HEARTBEAT_FRAME]
+
+
+@pytest.mark.asyncio
+async def test_connection_send_heartbeat_ping_raises_after_disconnect():
+    """A disconnected connection refuses to ping rather than sending."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="hb")  # type: ignore[arg-type]
+
+    conn.disconnect()
+
+    with pytest.raises(ConnectionError):
+        await conn.send_heartbeat_ping()
+    assert ws.sent == []
+
+
+def test_is_avatar_mode_keys_on_audio_params_absence():
+    """AVATAR hello has no audio_params; xiaozhi hello does."""
+    mgr = ESP32Manager()
+
+    assert mgr._is_avatar_mode({"type": "hello"}) is True
+    assert mgr._is_avatar_mode({"type": "hello", "audio_params": {}}) is False
+
+
+@pytest.mark.asyncio
+async def test_manager_heartbeat_loop_pings_until_stopped(monkeypatch):
+    """The heartbeat loop emits only 0x10 frames on the configured cadence."""
+    import stackchan_mcp.esp32_client as mod
+
+    monkeypatch.setattr(mod, "HEARTBEAT_PING_INTERVAL", 0.01)
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="hb")  # type: ignore[arg-type]
+    mgr = ESP32Manager()
+
+    mgr._start_heartbeat(conn)
+    await asyncio.sleep(0.05)
+    mgr._stop_heartbeat()
+
+    assert _HEARTBEAT_FRAME in ws.sent
+    assert all(frame == _HEARTBEAT_FRAME for frame in ws.sent)
+
+
+@pytest.mark.asyncio
+async def test_manager_heartbeat_loop_stops_on_disconnect(monkeypatch):
+    """A disconnected device ends the loop instead of spinning forever."""
+    import stackchan_mcp.esp32_client as mod
+
+    monkeypatch.setattr(mod, "HEARTBEAT_PING_INTERVAL", 0.01)
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="hb")  # type: ignore[arg-type]
+    mgr = ESP32Manager()
+
+    mgr._start_heartbeat(conn)
+    await asyncio.sleep(0.03)
+    conn.disconnect()
+    await asyncio.sleep(0.03)
+    settled = len(ws.sent)
+    await asyncio.sleep(0.03)
+
+    assert len(ws.sent) == settled  # no pings after disconnect
+    mgr._stop_heartbeat()
+
+
+@pytest.mark.asyncio
+async def test_avatar_hello_arms_heartbeat(manager, monkeypatch):
+    """An AVATAR hello (no audio_params) starts receiving 0x10 ping frames."""
+    import stackchan_mcp.esp32_client as mod
+
+    monkeypatch.setattr(mod, "HEARTBEAT_PING_INTERVAL", 0.02)
+    port = manager._test_port
+
+    async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+        hello = {"type": "hello", "version": 1, "features": {"mcp": True}}
+        await ws.send(json.dumps(hello))
+
+        got_ping = False
+        for _ in range(20):
+            frame = await asyncio.wait_for(ws.recv(), timeout=1.0)
+            if (
+                isinstance(frame, (bytes, bytearray))
+                and bytes(frame) == _HEARTBEAT_FRAME
+            ):
+                got_ping = True
+                break
+        assert got_ping
+
+
+@pytest.mark.asyncio
+async def test_xiaozhi_hello_does_not_arm_heartbeat(manager, monkeypatch):
+    """A device declaring audio_params must never receive a 0x10 ping.
+
+    Its firmware path treats binary frames as Opus audio. With no
+    FAMILIAR_URL configured the gateway starts neither a conversation nor a
+    heartbeat, so no binary frame should reach the device.
+    """
+    import stackchan_mcp.esp32_client as mod
+
+    monkeypatch.setattr(mod, "HEARTBEAT_PING_INTERVAL", 0.02)
+    port = manager._test_port
+
+    async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+        hello = {
+            "type": "hello",
+            "version": 1,
+            "features": {"mcp": True},
+            "audio_params": {
+                "format": "opus",
+                "sample_rate": 16000,
+                "channels": 1,
+                "frame_duration": 60,
+            },
+        }
+        await ws.send(json.dumps(hello))
+
+        binary_seen = False
+        try:
+            for _ in range(6):
+                frame = await asyncio.wait_for(ws.recv(), timeout=0.2)
+                if isinstance(frame, (bytes, bytearray)):
+                    binary_seen = True
+                    break
+        except asyncio.TimeoutError:
+            pass
+        assert binary_seen is False
+
+
 @pytest.mark.asyncio
 async def test_connection_send_tts_state_sends_json():
     """ESP32Connection.send_tts_state writes a tts state JSON message."""
