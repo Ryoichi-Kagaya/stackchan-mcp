@@ -63,6 +63,7 @@ class _FakeESP32:
         self.frames: list[bytes] = []
         self.tts_states: list[str] = []
         self.tool_calls: list[tuple[str, dict[str, Any]]] = []
+        self.emotions: list[str] = []
         self.avatar_error = avatar_error
         self.avatar_result = avatar_result
         # Records the relative order in which audio frames and TTS state
@@ -87,6 +88,10 @@ class _FakeESP32:
                 return self.avatar_result, None
             return {"ok": True}, None
         raise AssertionError(f"unexpected tool call: {name}")
+
+    async def send_llm_emotion(self, emotion: str) -> None:
+        self.emotions.append(emotion)
+        self.events.append(("emotion", emotion))
 
     async def send_audio_frame(self, frame: bytes) -> None:
         self.frames.append(frame)
@@ -254,6 +259,59 @@ async def test_pipeline_dispatches_face_and_strips_plain_engine_text(fake_encode
     assert result["text_stripped"] is True
     assert result["tts_text"] == "やったね rocket"
     assert result["spoke"] is True
+
+
+@pytest.mark.asyncio
+async def test_pipeline_emotion_arg_drives_face_via_llm_message(fake_encode):
+    """A caller-supplied emotion sets the face via send_llm_emotion before audio."""
+    pcm = b"\x01\x00" * 960
+    engine = _PCMEngine(pcm)
+    esp32 = _FakeESP32(connected=True)
+    gateway = _FakeGateway(esp32)
+
+    reg = EngineRegistry()
+    reg.register(engine)
+
+    result = await synthesize_and_send(
+        {"text": "おはよう", "voice": "voicevox", "emotion": "happy"},
+        gateway=gateway,
+        registry=reg,
+    )
+
+    # The llm.emotion path is used, not the emoji set_avatar device tool.
+    assert esp32.emotions == ["happy"]
+    assert esp32.tool_calls == []
+    # Emotion is dispatched before the first audio frame.
+    first_frame = next(i for i, (k, _) in enumerate(esp32.events) if k == "frame")
+    emotion_at = next(i for i, (k, _) in enumerate(esp32.events) if k == "emotion")
+    assert emotion_at < first_frame
+    assert result["emotion"] == "happy"
+    assert result["face_dispatched"] is True
+    assert result["face_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_emotion_arg_takes_precedence_over_emoji_face(fake_encode):
+    """When both an emotion arg and an emoji are present, emotion wins."""
+    pcm = b"\x01\x00" * 960
+    engine = _PCMEngine(pcm)
+    esp32 = _FakeESP32(connected=True)
+    gateway = _FakeGateway(esp32)
+
+    reg = EngineRegistry()
+    reg.register(engine)
+
+    result = await synthesize_and_send(
+        {"text": "かなしい 😊", "voice": "voicevox", "emotion": "sad"},
+        gateway=gateway,
+        registry=reg,
+    )
+
+    assert esp32.emotions == ["sad"]
+    assert esp32.tool_calls == []  # emoji set_avatar path not taken
+    assert result["emotion"] == "sad"
+    assert result["face"] == "happy"  # emoji still detected/reported
+    assert result["face_dispatched"] is True
 
 
 @pytest.mark.asyncio

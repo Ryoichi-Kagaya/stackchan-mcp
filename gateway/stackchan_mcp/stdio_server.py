@@ -1351,6 +1351,20 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                                 "Ignored by engines that do not support it."
                             ),
                         },
+                        "emotion": {
+                            "type": "string",
+                            "description": (
+                                "Optional face emotion to show while speaking "
+                                "(happy, neutral, sad, angry). Switches the "
+                                "avatar face via the llm.emotion wire message "
+                                "before the first audio frame and takes "
+                                "precedence over any emoji-derived face. Use "
+                                "for caller-driven (e.g. appraisal-based) "
+                                "expression; omit to leave the face to emoji "
+                                "cues in the text."
+                            ),
+                            "enum": ["happy", "neutral", "sad", "angry"],
+                        },
                     },
                     "required": ["text"],
                 },

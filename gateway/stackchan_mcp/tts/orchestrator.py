@@ -127,6 +127,25 @@ async def _try_set_avatar_face(
     return True, None
 
 
+async def _try_send_emotion(
+    gateway: "Gateway",
+    emotion: str,
+) -> tuple[bool, str | None]:
+    """Drive the avatar face via the ``llm.emotion`` wire message.
+
+    Unlike :func:`_try_set_avatar_face` (which calls the ``self.display.set_avatar``
+    device tool used for emoji-derived faces), this sends ``{"type":"llm",
+    "emotion": ...}``, the path the AVATAR firmware reads for ``SetEmotion()``.
+    Used for caller-supplied, appraisal-driven emotions (happy/neutral/sad/angry).
+    """
+    try:
+        await gateway.esp32.send_llm_emotion(emotion)
+    except Exception as exc:
+        logger.warning("say(): send_llm_emotion(%s) failed: %s", emotion, exc)
+        return False, str(exc)
+    return True, None
+
+
 async def _try_set_avatar_face_with_tts_lock(
     gateway: "Gateway",
     face: str,
@@ -191,6 +210,14 @@ async def synthesize_and_send(
         raise ValueError("'text' is required and must be a non-empty string")
 
     face = detect_emoji_face(text)
+
+    # Caller-supplied, appraisal-driven emotion (happy/neutral/sad/angry).
+    # When present it drives the face via the llm.emotion wire message and
+    # takes precedence over any emoji-derived face for this utterance.
+    emotion_raw = arguments.get("emotion")
+    emotion = (
+        emotion_raw if isinstance(emotion_raw, str) and emotion_raw.strip() else None
+    )
 
     # An explicit, non-empty ``voice`` argument always wins. Otherwise the
     # default engine is resolved from STACKCHAN_TTS_ENGINE (falling back to
@@ -314,7 +341,12 @@ async def synthesize_and_send(
 
     async def dispatch_face_before_first_frame() -> None:
         nonlocal face_dispatched, face_error
-        if face is not None:
+        if emotion is not None:
+            face_dispatched, face_error = await _try_send_emotion(
+                gateway,
+                emotion,
+            )
+        elif face is not None:
             face_dispatched, face_error = await _try_set_avatar_face(
                 gateway,
                 face,
@@ -328,7 +360,9 @@ async def synthesize_and_send(
         pcm,
         source_label=f"engine:{voice}",
         before_first_frame=(
-            dispatch_face_before_first_frame if face is not None else None
+            dispatch_face_before_first_frame
+            if (emotion is not None or face is not None)
+            else None
         ),
     )
 
@@ -349,6 +383,7 @@ async def synthesize_and_send(
         "frame_duration_ms": result["frame_duration_ms"],
         "duration_ms": result["duration_ms"],
         "face": face,
+        "emotion": emotion,
         "face_dispatched": face_dispatched,
         "face_error": face_error,
         "text_stripped": text_stripped,
