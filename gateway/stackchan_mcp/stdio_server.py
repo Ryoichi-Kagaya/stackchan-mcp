@@ -1309,7 +1309,7 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                     "TTS. The gateway synthesises audio, encodes it to Opus, "
                     "and pushes frames over the existing WebSocket; the device "
                     "firmware does not change. Engine is selectable via 'voice' "
-                    "(default 'voicevox'). If the text contains a supported "
+                    "(default 'elevenlabs'). If the text contains a supported "
                     "expression emoji, say first switches the avatar face in the "
                     "same call: happy (😊 😄 😀 😁 🙂 😆 🥰 😍 😋 🤗), "
                     "sad (😢 😭 😞 😔 ☹️ 🙁 😿), surprised (😲 😮 😯 😱 🤯), "
@@ -1331,10 +1331,10 @@ def create_server(notify_config: NotifyConfig | None = None) -> StackChanServer:
                         "voice": {
                             "type": "string",
                             "description": (
-                                "Engine identifier (e.g. 'voicevox', 'irodori'). "
-                                "Default 'voicevox'."
+                                "Engine identifier (e.g. 'elevenlabs', "
+                                "'voicevox', 'irodori'). Default 'elevenlabs'."
                             ),
-                            "default": "voicevox",
+                            "default": "elevenlabs",
                         },
                         "speaker_id": {
                             "type": "integer",
