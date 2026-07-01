@@ -510,11 +510,35 @@ async def send_pcm_audio(
     tts_lock = getattr(gateway.esp32, "tts_lock", None)
     lock_ctx = tts_lock if tts_lock is not None else nullcontext()
 
+    # AVATAR firmware (hal_ws_avatar.cpp) plays audio through the binary
+    # DataType protocol (StartAudioStream / Opus / StopAudioStream), not
+    # the xiaozhi tts-JSON + raw-Opus path. Pick the framing that matches
+    # the connected device so the same say()/speak() pipeline drives both.
+    avatar_mode = bool(getattr(gateway.esp32, "is_avatar_mode", False))
+    if avatar_mode:
+
+        async def _start() -> None:
+            await gateway.esp32.send_avatar_audio_start(
+                DEVICE_SAMPLE_RATE, DEVICE_FRAME_DURATION_MS
+            )
+
+        _send_frame = gateway.esp32.send_avatar_audio_frame
+        _stop = gateway.esp32.send_avatar_audio_stop
+    else:
+
+        async def _start() -> None:
+            await gateway.esp32.send_tts_state("start")
+
+        _send_frame = gateway.esp32.send_audio_frame
+
+        async def _stop() -> None:
+            await gateway.esp32.send_tts_state("stop")
+
     sent = 0
     push_error: ConnectionError | None = None
     async with lock_ctx:
         try:
-            await gateway.esp32.send_tts_state("start")
+            await _start()
         except ConnectionError as exc:
             raise RuntimeError(
                 f"Device disconnected before TTS start notification: {exc}"
@@ -545,7 +569,7 @@ async def send_pcm_audio(
                 if now < next_send_time:
                     await asyncio.sleep(next_send_time - now)
                 try:
-                    await gateway.esp32.send_audio_frame(frame)
+                    await _send_frame(frame)
                 except ConnectionError as exc:
                     # Stop pushing on the first disconnect, but fall
                     # through to the stop notification (see finally) so
@@ -558,7 +582,7 @@ async def send_pcm_audio(
                 next_send_time += frame_period_s
         finally:
             try:
-                await gateway.esp32.send_tts_state("stop")
+                await _stop()
             except ConnectionError:
                 # If the device dropped, it'll return to idle on its
                 # own when the WebSocket close lands; nothing to do

@@ -29,8 +29,11 @@ from stackchan_mcp.tts.audio_utils import (
 class _FakeESP32:
     """Records what reaches the wire so tests can assert event ordering."""
 
-    def __init__(self, *, connected: bool = True) -> None:
+    def __init__(
+        self, *, connected: bool = True, is_avatar_mode: bool = False
+    ) -> None:
         self.device_connected = connected
+        self.is_avatar_mode = is_avatar_mode
         self.frames: list[bytes] = []
         self.tts_states: list[str] = []
         self.events: list[tuple[str, object]] = []
@@ -43,6 +46,19 @@ class _FakeESP32:
     async def send_tts_state(self, state: str) -> None:
         self.tts_states.append(state)
         self.events.append(("tts_state", state))
+
+    # AVATAR binary DataType protocol egress (hal_ws_avatar.cpp)
+    async def send_avatar_audio_start(
+        self, sample_rate: int, frame_ms: int
+    ) -> None:
+        self.events.append(("avatar_start", (sample_rate, frame_ms)))
+
+    async def send_avatar_audio_frame(self, frame: bytes) -> None:
+        self.frames.append(frame)
+        self.events.append(("avatar_frame", frame))
+
+    async def send_avatar_audio_stop(self) -> None:
+        self.events.append(("avatar_stop", None))
 
 
 class _FakeGateway:
@@ -101,6 +117,29 @@ async def test_send_pcm_audio_pushes_frames_with_state_brackets(fake_encode):
     assert esp32.events[-1] == ("tts_state", "stop")
     middle = esp32.events[1:-1]
     assert all(kind == "frame" for kind, _ in middle)
+
+
+@pytest.mark.asyncio
+async def test_send_pcm_audio_avatar_mode_uses_binary_framing(fake_encode):
+    """AVATAR-mode devices get StartAudioStream/Opus/StopAudioStream, not tts JSON."""
+    pcm = b"\x01\x00" * 1440  # 2 frames
+    esp32 = _FakeESP32(connected=True, is_avatar_mode=True)
+    gateway = _FakeGateway(esp32)
+
+    result = await send_pcm_audio(gateway, pcm, source_label="avatar_test")
+
+    assert result["frame_count"] == 2
+    assert esp32.frames == [b"opus_frame_0", b"opus_frame_1"]
+    # No xiaozhi tts-JSON state notifications in AVATAR mode.
+    assert esp32.tts_states == []
+    # avatar_start(rate, frame_ms) first, avatar_stop last, frames between.
+    assert esp32.events[0] == (
+        "avatar_start",
+        (DEVICE_SAMPLE_RATE, DEVICE_FRAME_DURATION_MS),
+    )
+    assert esp32.events[-1] == ("avatar_stop", None)
+    middle = esp32.events[1:-1]
+    assert all(kind == "avatar_frame" for kind, _ in middle)
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import socket
+import struct
 import time
 import uuid
 from typing import Any
@@ -103,6 +104,12 @@ class ESP32Connection:
         # payload). v2/v3 add a BinaryProtocol header that this gateway
         # does not yet wrap — see Issue follow-up to #70.
         self.protocol_version: int = 1
+        # True when this device connected via the AVATAR firmware path
+        # (hal_ws_avatar.cpp) — no ``audio_params`` in the hello. AVATAR
+        # firmware plays audio through the binary DataType protocol
+        # (StartAudioStream/Opus/StopAudioStream), NOT the xiaozhi
+        # tts-JSON + raw-Opus path. Set by ESP32Manager on hello.
+        self.is_avatar_mode: bool = False
 
     @property
     def connected(self) -> bool:
@@ -317,6 +324,50 @@ class ESP32Connection:
         if not self._connected:
             raise ConnectionError("ESP32 not connected")
         await self._ws_send(opus_frame)
+
+    async def send_avatar_audio_start(
+        self, sample_rate: int, frame_ms: int
+    ) -> None:
+        """Send an AVATAR-mode StartAudioStream frame (DataType 0x18).
+
+        AVATAR firmware (hal_ws_avatar.cpp) opens its Opus decoder and
+        enables the speaker on this frame, then begins lip-sync. The wire
+        format matches ``sendPacket``:
+
+            [0x18][len=6, u32 BE][sample_rate, u32 BE][frame_ms, u16 BE]
+
+        ``sample_rate`` is the encoded input rate (informational — the
+        device decodes to its native 24 kHz output regardless);
+        ``frame_ms`` MUST match the Opus frame duration so the decoder
+        sizes its output buffer correctly.
+        """
+        if not self._connected:
+            raise ConnectionError("ESP32 not connected")
+        payload = struct.pack(">IH", int(sample_rate), int(frame_ms))
+        frame = b"\x18" + struct.pack(">I", len(payload)) + payload
+        await self._ws_send(frame)
+
+    async def send_avatar_audio_frame(self, opus_frame: bytes) -> None:
+        """Send a single Opus frame in AVATAR binary framing (DataType 0x01).
+
+        Wire format: ``[0x01][len, u32 BE][opus bytes]``. The AVATAR
+        firmware strips the 5-byte header and enqueues the payload onto
+        its decode/playback task.
+        """
+        if not self._connected:
+            raise ConnectionError("ESP32 not connected")
+        frame = b"\x01" + struct.pack(">I", len(opus_frame)) + opus_frame
+        await self._ws_send(frame)
+
+    async def send_avatar_audio_stop(self) -> None:
+        """Send an AVATAR-mode StopAudioStream frame (DataType 0x19).
+
+        Wire format: ``[0x19][len=0, u32 BE]``. The device drains its
+        decode queue, closes the decoder, and ends lip-sync.
+        """
+        if not self._connected:
+            raise ConnectionError("ESP32 not connected")
+        await self._ws_send(b"\x19\x00\x00\x00\x00")
 
     async def send_heartbeat_ping(self) -> None:
         """Send an AVATAR-mode application heartbeat ping (DataType 0x10).
@@ -844,9 +895,13 @@ class ESP32Manager:
                     # audio_params drives a familiar-ai conversation loop.
                     # Opt-in via FAMILIAR_URL; otherwise behaviour is
                     # unchanged (pure MCP / AVATAR).
+                    avatar_mode = not self._wants_conversation(
+                        data
+                    ) and self._is_avatar_mode(data)
+                    connection.is_avatar_mode = avatar_mode
                     if self._wants_conversation(data):
                         await self._start_conversation(connection, session_id)
-                    elif self._is_avatar_mode(data):
+                    elif avatar_mode:
                         # AVATAR / pure-MCP mode: keep the firmware's
                         # application heartbeat alive so it stops logging
                         # "Heartbeat timeout!" every 10s.
@@ -1221,6 +1276,36 @@ class ESP32Manager:
         if not self._connection or not self._connection.connected:
             raise ConnectionError("No ESP32 device connected")
         await self._connection.send_audio_frame(opus_frame)
+
+    @property
+    def is_avatar_mode(self) -> bool:
+        """True when the connected device speaks the AVATAR binary protocol.
+
+        Used by the TTS orchestrator to pick the AVATAR audio framing
+        (StartAudioStream/Opus/StopAudioStream) over the xiaozhi
+        tts-JSON + raw-Opus path. False when no device is connected.
+        """
+        return bool(self._connection and self._connection.is_avatar_mode)
+
+    async def send_avatar_audio_start(
+        self, sample_rate: int, frame_ms: int
+    ) -> None:
+        """Send an AVATAR StartAudioStream frame; see ESP32Connection."""
+        if not self._connection or not self._connection.connected:
+            raise ConnectionError("No ESP32 device connected")
+        await self._connection.send_avatar_audio_start(sample_rate, frame_ms)
+
+    async def send_avatar_audio_frame(self, opus_frame: bytes) -> None:
+        """Send one AVATAR-framed Opus frame; see ESP32Connection."""
+        if not self._connection or not self._connection.connected:
+            raise ConnectionError("No ESP32 device connected")
+        await self._connection.send_avatar_audio_frame(opus_frame)
+
+    async def send_avatar_audio_stop(self) -> None:
+        """Send an AVATAR StopAudioStream frame; see ESP32Connection."""
+        if not self._connection or not self._connection.connected:
+            raise ConnectionError("No ESP32 device connected")
+        await self._connection.send_avatar_audio_stop()
 
     async def send_tts_state(
         self,

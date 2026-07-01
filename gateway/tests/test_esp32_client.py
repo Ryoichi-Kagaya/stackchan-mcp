@@ -559,6 +559,76 @@ def test_is_avatar_mode_keys_on_audio_params_absence():
     assert mgr._is_avatar_mode({"type": "hello", "audio_params": {}}) is False
 
 
+# ---------------------------------------------------------------------------
+# AVATAR-mode audio framing (StartAudioStream / Opus / StopAudioStream)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_connection_send_avatar_audio_start_frames_header():
+    """0x18 start frame carries [len=6 BE][sample_rate BE][frame_ms BE]."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="av")  # type: ignore[arg-type]
+
+    await conn.send_avatar_audio_start(16000, 60)
+
+    # [0x18][00 00 00 06][00 00 3E 80][00 3C]
+    assert ws.sent == [b"\x18\x00\x00\x00\x06\x00\x00\x3e\x80\x00\x3c"]
+
+
+@pytest.mark.asyncio
+async def test_connection_send_avatar_audio_frame_prefixes_type_and_len():
+    """0x01 opus frame is [0x01][len BE][payload]."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="av")  # type: ignore[arg-type]
+
+    await conn.send_avatar_audio_frame(b"abcd")
+
+    assert ws.sent == [b"\x01\x00\x00\x00\x04abcd"]
+
+
+@pytest.mark.asyncio
+async def test_connection_send_avatar_audio_stop_frames_zero_len():
+    """0x19 stop frame is the bare 5-byte header with length 0."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="av")  # type: ignore[arg-type]
+
+    await conn.send_avatar_audio_stop()
+
+    assert ws.sent == [b"\x19\x00\x00\x00\x00"]
+
+
+@pytest.mark.asyncio
+async def test_avatar_audio_frames_raise_after_disconnect():
+    """All three AVATAR audio methods refuse to send once disconnected."""
+    ws = _FakeWebSocket()
+    conn = ESP32Connection(ws, session_id="av")  # type: ignore[arg-type]
+
+    conn.disconnect()
+
+    with pytest.raises(ConnectionError):
+        await conn.send_avatar_audio_start(16000, 60)
+    with pytest.raises(ConnectionError):
+        await conn.send_avatar_audio_frame(b"abcd")
+    with pytest.raises(ConnectionError):
+        await conn.send_avatar_audio_stop()
+    assert ws.sent == []
+
+
+@pytest.mark.asyncio
+async def test_manager_avatar_audio_methods_no_device():
+    """Manager AVATAR audio facades raise when no device is attached."""
+    mgr = ESP32Manager()
+
+    assert mgr.is_avatar_mode is False
+    with pytest.raises(ConnectionError):
+        await mgr.send_avatar_audio_start(16000, 60)
+    with pytest.raises(ConnectionError):
+        await mgr.send_avatar_audio_frame(b"abcd")
+    with pytest.raises(ConnectionError):
+        await mgr.send_avatar_audio_stop()
+
+
 @pytest.mark.asyncio
 async def test_manager_heartbeat_loop_pings_until_stopped(monkeypatch):
     """The heartbeat loop emits only 0x10 frames on the configured cadence."""
