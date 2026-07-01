@@ -515,6 +515,11 @@ async def send_pcm_audio(
     # the xiaozhi tts-JSON + raw-Opus path. Pick the framing that matches
     # the connected device so the same say()/speak() pipeline drives both.
     avatar_mode = bool(getattr(gateway.esp32, "is_avatar_mode", False))
+    logger.info(
+        "send_pcm_audio: wire_format=%s (avatar_mode=%s)",
+        "avatar-binary" if avatar_mode else "xiaozhi-tts-json",
+        avatar_mode,
+    )
     if avatar_mode:
 
         async def _start() -> None:
