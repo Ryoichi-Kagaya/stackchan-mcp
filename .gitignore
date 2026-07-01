@@ -45,6 +45,9 @@ firmware/main/boards/stackchan/avatar_images.local.h
 firmware/nvs_config.csv
 firmware/nvs_new.bin
 
+# NVS secrets (WiFi credentials, websocket token) — real values, never commit
+firmware/nvs_config.env
+
 # Gateway runtime logs
 gateway/gateway.log
 

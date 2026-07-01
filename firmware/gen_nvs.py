@@ -1,16 +1,57 @@
 #!/usr/bin/env python3
-"""Generate NVS image with websocket config, preserving existing wifi/board settings."""
-import subprocess, sys, os, csv, tempfile
+"""Generate NVS image with websocket config, preserving existing wifi/board settings.
 
-# Existing values read from NVS dump
-BOARD_UUID   = "a497a7e7-38d0-476c-acb8-ea7f3a784d51"
-WIFI_SSID    = "WARPSTAR-2770FF-G"
-WIFI_PASS    = "***WIFI_PASS_REMOVED***"
-DISPLAY_THEME = "light"
+Secrets (WiFi credentials, websocket token, board UUID) are **not** hardcoded
+here. They are read from an untracked env file next to this script
+(``nvs_config.env``, gitignored) or from the process environment. Copy
+``nvs_config.env.sample`` to ``nvs_config.env`` and fill in real values before
+running.
+"""
+import csv
+import os
+import subprocess
+import sys
 
-# New websocket settings
-WS_URL   = "ws://192.168.10.104:8765"
-WS_TOKEN = "stackchan-secret"
+_HERE = os.path.dirname(__file__)
+
+
+def _load_env_file(path):
+    """Parse a minimal KEY=VALUE env file (``#`` comments, optional quotes)."""
+    cfg = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                cfg[key.strip()] = value.strip().strip('"').strip("'")
+    return cfg
+
+
+_env_file = _load_env_file(os.path.join(_HERE, "nvs_config.env"))
+
+
+def _cfg(key, default=None, *, required=False):
+    """Look up a config value: process env first, then env file, then default."""
+    value = os.environ.get(key, _env_file.get(key, default))
+    if required and not value:
+        sys.exit(
+            f"ERROR: {key} is not set. Copy nvs_config.env.sample to "
+            f"nvs_config.env and fill it in (or export {key})."
+        )
+    return value
+
+
+# Board / wifi / display settings (secrets sourced from env, not tracked)
+BOARD_UUID = _cfg("BOARD_UUID", required=True)
+WIFI_SSID = _cfg("WIFI_SSID", required=True)
+WIFI_PASS = _cfg("WIFI_PASS", required=True)
+DISPLAY_THEME = _cfg("DISPLAY_THEME", "light")
+
+# Websocket settings
+WS_URL = _cfg("WS_URL", required=True)
+WS_TOKEN = _cfg("WS_TOKEN", required=True)
 
 rows = [
     ["key",       "type",      "encoding", "value"],
@@ -32,15 +73,15 @@ rows = [
     ["token",        "data",      "string",   WS_TOKEN],
 ]
 
-csv_path = os.path.join(os.path.dirname(__file__), "nvs_config.csv")
-out_path = os.path.join(os.path.dirname(__file__), "nvs_new.bin")
+csv_path = os.path.join(_HERE, "nvs_config.csv")
+out_path = os.path.join(_HERE, "nvs_new.bin")
 
 with open(csv_path, "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerows(rows)
 
 nvs_gen = os.path.join(
-    os.environ.get("IDF_PATH", r"C:\esp\v5.5.4\esp-idf"),
+    os.environ.get("IDF_PATH", os.path.expanduser("~/esp/esp-idf")),
     "components", "nvs_flash", "nvs_partition_generator", "nvs_partition_gen.py"
 )
 
